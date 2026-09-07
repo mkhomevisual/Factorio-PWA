@@ -4,6 +4,7 @@ import type { FactoryAdapter, FactorySnapshot } from './factory-adapter.js';
 import type { Config } from './config.js';
 
 const PREFIX = 'HAL_TELEMETRY_V1:';
+const ERROR_PREFIX = 'HAL_TELEMETRY_ERROR:';
 
 export class FactorioRconAdapter implements FactoryAdapter {
   constructor(private readonly options: Config) {}
@@ -21,6 +22,8 @@ export class FactorioRconAdapter implements FactoryAdapter {
   async getSnapshot(afterEventId = '0'): Promise<FactorySnapshot> {
     const response = await this.command(`/hal-telemetry snapshot ${afterEventId}`);
     const json = response.split(/\r?\n/).find((line) => line.startsWith(PREFIX))?.slice(PREFIX.length);
+    const telemetryError = response.split(/\r?\n/).find((line) => line.startsWith(ERROR_PREFIX))?.slice(ERROR_PREFIX.length);
+    if (telemetryError) throw new Error(`Telemetry mod failed: ${telemetryError}`);
     if (!json) throw new Error('Telemetry mod did not return a HAL_TELEMETRY_V1 response.');
     const raw = JSON.parse(json) as {
       contractVersion: number; server: FactorySnapshot['server']; players: FactorySnapshot['players']; sharedFactory: FactorySnapshot['sharedFactory'];

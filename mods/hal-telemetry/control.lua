@@ -24,7 +24,10 @@ end
 
 local function initialize()
   -- Factorio 2.0 replaces the legacy `global` table with `storage`.
-  storage.hal = storage.hal or { next_event_id = 1, events = {}, personal = {} }
+  storage.hal = storage.hal or {}
+  storage.hal.next_event_id = storage.hal.next_event_id or 1
+  storage.hal.events = storage.hal.events or {}
+  storage.hal.personal = storage.hal.personal or {}
 end
 script.on_init(initialize)
 script.on_configuration_changed(initialize)
@@ -38,6 +41,7 @@ local function record(kind, player_index, detail)
 end
 
 local function personal(index)
+  initialize()
   storage.hal.personal[index] = storage.hal.personal[index] or { handCrafted = 0, mined = 0, built = 0, deaths = 0 }
   return storage.hal.personal[index]
 end
@@ -62,17 +66,33 @@ local function make_players()
 end
 
 local function make_factory()
-  local result = {}
+  local result, totals = {}, {}
   -- Current UI consumes the player's common force. Multi-force support is retained by force name in later contract fields.
-  local force = game.forces.player
+  local force = game.forces['player']
   if not force then return result end
-  local output, input = force.item_production_statistics.get_output_counts(), force.item_production_statistics.get_input_counts()
-  local keys = {}; for item, _ in pairs(output) do keys[item] = true end; for item, _ in pairs(input) do keys[item] = true end
-  for item, _ in pairs(keys) do table.insert(result, { item = item, produced = output[item] or 0, consumed = input[item] or 0 }) end
+
+  -- Factorio 2.0 stores production statistics per surface. Aggregate every
+  -- surface so Space Age production is represented as one shared factory.
+  for _, surface in pairs(game.surfaces) do
+    local statistics = force.get_item_production_statistics(surface)
+    for item, count in pairs(statistics.output_counts) do
+      totals[item] = totals[item] or { produced = 0, consumed = 0 }
+      totals[item].produced = totals[item].produced + count
+    end
+    for item, count in pairs(statistics.input_counts) do
+      totals[item] = totals[item] or { produced = 0, consumed = 0 }
+      totals[item].consumed = totals[item].consumed + count
+    end
+  end
+
+  for item, counts in pairs(totals) do
+    table.insert(result, { item = item, produced = counts.produced, consumed = counts.consumed })
+  end
+  table.sort(result, function(left, right) return left.item < right.item end)
   return result
 end
 
-commands.add_command('hal-telemetry', 'HAL Factory Control telemetry; usage: /hal-telemetry snapshot <after-event-id>', function(command)
+local function make_snapshot(command)
   initialize()
   local _, after = string.match(command.parameter or '', '^(%S+)%s*(.*)$')
   local after_id = tonumber(after) or 0
@@ -83,15 +103,27 @@ commands.add_command('hal-telemetry', 'HAL Factory Control telemetry; usage: /ha
       table.insert(events, { id = event.id, type = event.type, tick = event.tick, playerName = player and player.name or nil, detail = event.detail })
     end
   end
-  local server = { online = true, version = game.active_mods.base, gameState = game.tick_paused and 'paused' or 'running', uptimeSeconds = math.floor(game.tick / 60) }
+  local server = { online = true, version = script.active_mods['base'], gameState = game.tick_paused and 'paused' or 'running', uptimeSeconds = math.floor(game.tick / 60) }
   -- Explicit array encoding keeps an empty player/event/factory list valid JSON ([] rather than {}).
-  local payload = '{' ..
+  return '{' ..
     '"contractVersion":' .. json(CONTRACT_VERSION) .. ',' ..
     '"generatedAtTick":' .. json(game.tick) .. ',' ..
     '"server":' .. json(server) .. ',' ..
     '"players":' .. json_array(make_players()) .. ',' ..
     '"sharedFactory":' .. json_array(make_factory()) .. ',' ..
     '"events":{"afterId":' .. json(tostring(after_id)) .. ',"highWatermark":' .. json(tostring(storage.hal.next_event_id - 1)) .. ',"items":' .. json_array(events) .. '}' ..
-  '}'
+    '}'
+end
+
+commands.add_command('hal-telemetry', 'HAL Factory Control telemetry; usage: /hal-telemetry snapshot <after-event-id>', function(command)
+  -- A telemetry bug must never terminate the multiplayer server. Return a
+  -- diagnostic response and keep the world running if snapshot creation fails.
+  local ok, payload = pcall(make_snapshot, command)
+  if not ok then
+    local message = tostring(payload):gsub('[\r\n]', ' ')
+    log('HAL telemetry snapshot failed: ' .. message)
+    rcon.print('HAL_TELEMETRY_ERROR:' .. message)
+    return
+  end
   rcon.print(PREFIX .. payload)
 end)
