@@ -22,10 +22,11 @@ export type FactorySnapshot = {
   players: PlayerState[];
   sharedFactory: ProductionCounter[];
   events: Array<{ id: string; type: string; occurredAt: string; message: string }>;
+  eventCursor?: string;
 };
 
 export interface FactoryAdapter {
-  getSnapshot(): Promise<FactorySnapshot>;
+  getSnapshot(afterEventId?: string): Promise<FactorySnapshot>;
   save(): Promise<void>;
   sendMessage(message: string): Promise<void>;
 }

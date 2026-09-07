@@ -8,7 +8,7 @@ const baseCounters = [
 ] as const;
 
 export class MockFactoryAdapter implements FactoryAdapter {
-  async getSnapshot(): Promise<FactorySnapshot> {
+  async getSnapshot(_afterEventId?: string): Promise<FactorySnapshot> {
     const elapsedMinutes = Math.floor((Date.now() - startedAt) / 60_000);
     const now = new Date();
     return {

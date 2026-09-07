@@ -13,7 +13,13 @@ local function json(value)
   if value == nil then return 'null' end
   local parts, array = {}, (#value > 0)
   if array then for _, item in ipairs(value) do table.insert(parts, json(item)) end else for key, item in pairs(value) do table.insert(parts, quote(key) .. ':' .. json(item)) end end
-  return '{' .. table.concat(parts, ',') .. '}'
+  return (array and '[' or '{') .. table.concat(parts, ',') .. (array and ']' or '}')
+end
+
+local function json_array(values)
+  local parts = {}
+  for _, value in ipairs(values) do table.insert(parts, json(value)) end
+  return '[' .. table.concat(parts, ',') .. ']'
 end
 
 local function initialize()
@@ -70,7 +76,21 @@ commands.add_command('hal-telemetry', 'HAL Factory Control telemetry; usage: /ha
   local _, after = string.match(command.parameter or '', '^(%S+)%s*(.*)$')
   local after_id = tonumber(after) or 0
   local events = {}
-  for _, event in ipairs(global.hal.events) do if tonumber(event.id) > after_id then table.insert(events, event) end end
-  local payload = { contractVersion = CONTRACT_VERSION, generatedAt = game.tick, server = { online = true, version = game.active_mods.base, gameState = game.tick_paused and 'paused' or 'running', uptimeSeconds = math.floor(game.tick / 60) }, players = make_players(), sharedFactory = make_factory(), events = { afterId = tostring(after_id), highWatermark = tostring(global.hal.next_event_id - 1), items = events } }
-  rcon.print(PREFIX .. json(payload))
+  for _, event in ipairs(global.hal.events) do
+    if tonumber(event.id) > after_id then
+      local player = event.player_index and game.players[event.player_index] or nil
+      table.insert(events, { id = event.id, type = event.type, tick = event.tick, playerName = player and player.name or nil, detail = event.detail })
+    end
+  end
+  local server = { online = true, version = game.active_mods.base, gameState = game.tick_paused and 'paused' or 'running', uptimeSeconds = math.floor(game.tick / 60) }
+  -- Explicit array encoding keeps an empty player/event/factory list valid JSON ([] rather than {}).
+  local payload = '{' ..
+    '"contractVersion":' .. json(CONTRACT_VERSION) .. ',' ..
+    '"generatedAtTick":' .. json(game.tick) .. ',' ..
+    '"server":' .. json(server) .. ',' ..
+    '"players":' .. json_array(make_players()) .. ',' ..
+    '"sharedFactory":' .. json_array(make_factory()) .. ',' ..
+    '"events":{"afterId":' .. json(tostring(after_id)) .. ',"highWatermark":' .. json(tostring(global.hal.next_event_id - 1)) .. ',"items":' .. json_array(events) .. '}' ..
+  '}'
+  rcon.print(PREFIX .. payload)
 end)

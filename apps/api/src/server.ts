@@ -82,7 +82,8 @@ class TelemetryPoller {
     if (this.busy) return;
     this.busy = true;
     try {
-      const snapshot = await this.adapter.getSnapshot();
+      const previousCursor = this.db.prepare('SELECT cursor FROM telemetry_cursors WHERE source=?').get('hal-telemetry') as { cursor: string } | undefined;
+      const snapshot = await this.adapter.getSnapshot(previousCursor?.cursor);
       const collectedAt = timestamp();
       this.db.prepare('INSERT INTO telemetry_snapshots(id,scope_type,scope_key,contract_version,collected_at,payload) VALUES(?,?,?,?,?,?)')
         .run(randomUUID(), 'shared', 'main', snapshot.contractVersion, collectedAt, gzipSync(JSON.stringify(snapshot)));
@@ -90,6 +91,8 @@ class TelemetryPoller {
         VALUES(?,?,?,?,?,?,?)`);
       const transaction = this.db.transaction(() => {
         for (const event of snapshot.events) insertEvent.run(randomUUID(), 'telemetry', event.type, event.id, JSON.stringify(event), event.occurredAt, collectedAt);
+        if (snapshot.eventCursor) this.db.prepare(`INSERT INTO telemetry_cursors(source,cursor,updated_at) VALUES(?,?,?) ON CONFLICT(source) DO UPDATE SET cursor=excluded.cursor,updated_at=excluded.updated_at`)
+          .run('hal-telemetry', snapshot.eventCursor, collectedAt);
       });
       transaction();
       // Retention: raw per-minute samples for 48 hours. Downsampling is added before longer retention is enabled.
