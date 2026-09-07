@@ -23,22 +23,23 @@ local function json_array(values)
 end
 
 local function initialize()
-  global.hal = global.hal or { next_event_id = 1, events = {}, personal = {} }
+  -- Factorio 2.0 replaces the legacy `global` table with `storage`.
+  storage.hal = storage.hal or { next_event_id = 1, events = {}, personal = {} }
 end
 script.on_init(initialize)
 script.on_configuration_changed(initialize)
 
 local function record(kind, player_index, detail)
   initialize()
-  local event = { id = tostring(global.hal.next_event_id), type = kind, tick = game.tick, player_index = player_index, detail = detail or {} }
-  global.hal.next_event_id = global.hal.next_event_id + 1
-  table.insert(global.hal.events, event)
-  if #global.hal.events > 10000 then table.remove(global.hal.events, 1) end
+  local event = { id = tostring(storage.hal.next_event_id), type = kind, tick = game.tick, player_index = player_index, detail = detail or {} }
+  storage.hal.next_event_id = storage.hal.next_event_id + 1
+  table.insert(storage.hal.events, event)
+  if #storage.hal.events > 10000 then table.remove(storage.hal.events, 1) end
 end
 
 local function personal(index)
-  global.hal.personal[index] = global.hal.personal[index] or { handCrafted = 0, mined = 0, built = 0, deaths = 0 }
-  return global.hal.personal[index]
+  storage.hal.personal[index] = storage.hal.personal[index] or { handCrafted = 0, mined = 0, built = 0, deaths = 0 }
+  return storage.hal.personal[index]
 end
 
 script.on_event(defines.events.on_player_joined_game, function(e) record('player.joined', e.player_index) end)
@@ -54,7 +55,7 @@ script.on_event(defines.events.on_robot_built_entity, function(e) if e.player_in
 local function make_players()
   local players = {}
   for _, player in pairs(game.players) do
-    local metrics = global.hal.personal[player.index] or { handCrafted = 0, mined = 0, built = 0, deaths = 0 }
+    local metrics = storage.hal.personal[player.index] or { handCrafted = 0, mined = 0, built = 0, deaths = 0 }
     table.insert(players, { factorioName = player.name, online = player.connected, playtimeSeconds = math.floor(player.online_time / 60), personalActivity = metrics })
   end
   return players
@@ -76,7 +77,7 @@ commands.add_command('hal-telemetry', 'HAL Factory Control telemetry; usage: /ha
   local _, after = string.match(command.parameter or '', '^(%S+)%s*(.*)$')
   local after_id = tonumber(after) or 0
   local events = {}
-  for _, event in ipairs(global.hal.events) do
+  for _, event in ipairs(storage.hal.events) do
     if tonumber(event.id) > after_id then
       local player = event.player_index and game.players[event.player_index] or nil
       table.insert(events, { id = event.id, type = event.type, tick = event.tick, playerName = player and player.name or nil, detail = event.detail })
@@ -90,7 +91,7 @@ commands.add_command('hal-telemetry', 'HAL Factory Control telemetry; usage: /ha
     '"server":' .. json(server) .. ',' ..
     '"players":' .. json_array(make_players()) .. ',' ..
     '"sharedFactory":' .. json_array(make_factory()) .. ',' ..
-    '"events":{"afterId":' .. json(tostring(after_id)) .. ',"highWatermark":' .. json(tostring(global.hal.next_event_id - 1)) .. ',"items":' .. json_array(events) .. '}' ..
+    '"events":{"afterId":' .. json(tostring(after_id)) .. ',"highWatermark":' .. json(tostring(storage.hal.next_event_id - 1)) .. ',"items":' .. json_array(events) .. '}' ..
   '}'
   rcon.print(PREFIX .. payload)
 end)
