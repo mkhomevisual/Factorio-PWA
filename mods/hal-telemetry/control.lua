@@ -67,33 +67,42 @@ end
 
 local function make_factory()
   local result, totals = {}, {}
-  -- Current UI consumes the player's common force. Multi-force support is retained by force name in later contract fields.
-  local force = game.forces['player']
-  if not force then return result end
+  -- Some multiplayer mods move every operator into a dedicated force (for
+  -- example solo_MarkanMegaBuilder). Aggregate the distinct forces that own
+  -- actual players instead of reading the now-unused default `player` force.
+  local production_forces = {}
+  for _, player in pairs(game.players) do
+    production_forces[player.force.name] = player.force
+  end
+  if next(production_forces) == nil and game.forces['player'] then
+    production_forces['player'] = game.forces['player']
+  end
 
   -- Factorio 2.0 stores production statistics per surface. Aggregate every
   -- surface so Space Age production is represented as one shared factory.
-  for _, surface in pairs(game.surfaces) do
-    local statistics = force.get_item_production_statistics(surface)
-    -- LuaFlowStatistics uses "input" for the left side of the item GUI
-    -- (production) and "output" for the right side (consumption).
-    for item, count in pairs(statistics.input_counts) do
-      totals[item] = totals[item] or { produced = 0, consumed = 0, productionRate = 0, consumptionRate = 0 }
-      totals[item].produced = totals[item].produced + count
-      totals[item].productionRate = totals[item].productionRate + statistics.get_flow_count {
-        name = item,
-        category = 'input',
-        precision_index = defines.flow_precision_index.one_minute
-      }
-    end
-    for item, count in pairs(statistics.output_counts) do
-      totals[item] = totals[item] or { produced = 0, consumed = 0, productionRate = 0, consumptionRate = 0 }
-      totals[item].consumed = totals[item].consumed + count
-      totals[item].consumptionRate = totals[item].consumptionRate + statistics.get_flow_count {
-        name = item,
-        category = 'output',
-        precision_index = defines.flow_precision_index.one_minute
-      }
+  for _, force in pairs(production_forces) do
+    for _, surface in pairs(game.surfaces) do
+      local statistics = force.get_item_production_statistics(surface)
+      -- LuaFlowStatistics uses "input" for the left side of the item GUI
+      -- (production) and "output" for the right side (consumption).
+      for item, count in pairs(statistics.input_counts) do
+        totals[item] = totals[item] or { produced = 0, consumed = 0, productionRate = 0, consumptionRate = 0 }
+        totals[item].produced = totals[item].produced + count
+        totals[item].productionRate = totals[item].productionRate + statistics.get_flow_count {
+          name = item,
+          category = 'input',
+          precision_index = defines.flow_precision_index.one_minute
+        }
+      end
+      for item, count in pairs(statistics.output_counts) do
+        totals[item] = totals[item] or { produced = 0, consumed = 0, productionRate = 0, consumptionRate = 0 }
+        totals[item].consumed = totals[item].consumed + count
+        totals[item].consumptionRate = totals[item].consumptionRate + statistics.get_flow_count {
+          name = item,
+          category = 'output',
+          precision_index = defines.flow_precision_index.one_minute
+        }
+      end
     end
   end
 
