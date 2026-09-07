@@ -3,7 +3,7 @@ import { executeFactorioRconCommand } from './factorio-rcon-client.js';
 import type { FactoryAdapter, FactorySnapshot } from './factory-adapter.js';
 import type { Config } from './config.js';
 
-const PREFIX = 'HAL_TELEMETRY_V1:';
+const PREFIX = 'HAL_TELEMETRY_V2:';
 const ERROR_PREFIX = 'HAL_TELEMETRY_ERROR:';
 
 export class FactorioRconAdapter implements FactoryAdapter {
@@ -24,15 +24,15 @@ export class FactorioRconAdapter implements FactoryAdapter {
     const json = response.split(/\r?\n/).find((line) => line.startsWith(PREFIX))?.slice(PREFIX.length);
     const telemetryError = response.split(/\r?\n/).find((line) => line.startsWith(ERROR_PREFIX))?.slice(ERROR_PREFIX.length);
     if (telemetryError) throw new Error(`Telemetry mod failed: ${telemetryError}`);
-    if (!json) throw new Error('Telemetry mod did not return a HAL_TELEMETRY_V1 response.');
+    if (!json) throw new Error('Telemetry mod did not return a HAL_TELEMETRY_V2 response.');
     const raw = JSON.parse(json) as {
       contractVersion: number; server: FactorySnapshot['server']; players: FactorySnapshot['players']; sharedFactory: FactorySnapshot['sharedFactory'];
       events: { highWatermark: string; items: Array<{ id: string; type: string; playerName?: string; detail?: { research?: string } }> };
     };
-    if (raw.contractVersion !== 1 || !Array.isArray(raw.events?.items)) throw new Error('Unsupported HAL telemetry contract.');
+    if (raw.contractVersion !== 2 || !Array.isArray(raw.sharedFactory) || !Array.isArray(raw.events?.items)) throw new Error('Unsupported HAL telemetry contract.');
     const observedAt = new Date().toISOString();
     return {
-      contractVersion: 1, generatedAt: observedAt, server: raw.server, players: raw.players, sharedFactory: raw.sharedFactory,
+      contractVersion: 2, generatedAt: observedAt, server: raw.server, players: raw.players, sharedFactory: raw.sharedFactory,
       eventCursor: raw.events.highWatermark,
       events: raw.events.items.map((event) => ({ id: event.id, type: event.type, occurredAt: observedAt, message: eventMessage(event) }))
     };

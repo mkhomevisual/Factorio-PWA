@@ -28,24 +28,34 @@ Použití produkčního override vyžaduje vytvořit neveřejný `.env.productio
 
 Nikdy do aplikace nemontujte Docker socket.
 
-## Factorio ikony
+## Factorio ikony a české názvy
 
-Názvy itemů v aplikaci používají přímo názvy Factorio prototype, například `iron-plate`. Pro přesné herní ikony aplikace očekává licencované PNG soubory v persistentním adresáři `/app/data/factorio-icons`; tento obsah není součástí Git repozitáře ani Docker image.
+Pro přesné herní ikony a české názvy aplikace očekává assety z vlastní instalace Factorio v persistentním adresáři `/app/data/factorio-icons`; tento obsah není součástí Git repozitáře ani Docker image. Importér čte pouze `graphics/icons` a `locale/cs`, nikoli velké herní textury.
 
-Po získání base assetů z vlastní instalace Factorio je lze importovat jednorázově do volume například takto (cesta `/local/path/icons` musí být adresář s PNG ikonami):
+Na Macu lze z vlastní instalace vytvořit malý přenosový balíček:
 
 ```bash
-docker compose run --rm -v /local/path/icons:/input:ro app npm run icons:import --workspace=@hal/api -- --source=/input
+./scripts/package-factorio-assets.sh \
+  "/Users/martinklima/Library/Application Support/Steam/steamapps/common/Factorio/factorio.app/Contents/data" \
+  /tmp/hal-factorio-assets.tar.gz
 ```
 
-Rozhraní pak automaticky použije `/api/icons/<prototype>`. Dokud ikona není lokálně importována, zobrazí se neutrální fallback — aplikace nikdy nestahuje ani neukládá cizí herní grafiku z internetu.
+Po rozbalení balíčku na serveru se assety jednorázově importují do persistentního volume:
+
+```bash
+docker compose run --rm -v /local/path/factorio-assets:/input:ro app npm run icons:import --workspace=@hal/api -- --source=/input
+```
+
+Rozhraní pak automaticky použije `/api/icons/<prototype>` a české názvy z `/api/prototypes`. Dokud assety nejsou lokálně importovány, zobrazí se neutrální fallback — aplikace nikdy nestahuje herní grafiku z internetu.
 
 ## Read-only Factorio log
 
 Produkční override připojuje `factorio-current.log` pouze pro čtení. Backend sleduje offset a inode, tedy log ani při rotaci nepřepisuje. Z rozpoznaných řádků vytváří activity události pro připojení/odpojení, save a běžně logovaný research či rocket launch. Autoritativní telemetry pro přesné události zajišťuje mod.
 
+## Production telemetry
+
+Mod `hal-telemetry` 0.2.0 používá kontrakt V2. Z Factorio 2 čte správnou dvojici item flow statistik (`input` = výroba, `output` = spotřeba), kumulativní počitadla a přímo herní klouzavé rychlosti za jednu minutu. Aplikace ukládá minutové vzorky, staré V1 vzorky při výpočtu grafů záměrně ignoruje a samostatně řadí nejvíce vyráběné a spotřebovávané položky.
+
 ## Stav implementace
 
-Hotovo: Docker multi-stage build, non-root runtime, healthcheck, persistentní volume, PWA shell, bezpečné sessions/CSRF/login rate-limit, dvouúčtové založení, mock adaptér, bezpečný RCON adapter, základ dashboardu, SQLite základ tasků a návrh telemetry modu.
-
-Následují: plné editace task boardu, historické production grafy a downsampling, activity/log tailer, profilové obrazovky a integrační test s Factorio 2.0.77.
+Hotovo: jeden non-root Docker kontejner, healthcheck, persistentní SQLite/asset volume, PWA, sessions/CSRF/login rate-limit, přesný RCON klient, telemetry V2, minutové výrobní grafy, Factorio ikony a české názvy, activity/log tailer, společné úkoly, profily a responzivní světlé i tmavé UI.

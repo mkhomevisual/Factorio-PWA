@@ -1,6 +1,6 @@
 -- HAL Factory Control telemetry bridge. No gameplay commands are registered.
-local CONTRACT_VERSION = 1
-local PREFIX = "HAL_TELEMETRY_V1:"
+local CONTRACT_VERSION = 2
+local PREFIX = "HAL_TELEMETRY_V2:"
 
 local function escape(value)
   return tostring(value):gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n'):gsub('\r', '\\r')
@@ -75,18 +75,36 @@ local function make_factory()
   -- surface so Space Age production is represented as one shared factory.
   for _, surface in pairs(game.surfaces) do
     local statistics = force.get_item_production_statistics(surface)
-    for item, count in pairs(statistics.output_counts) do
-      totals[item] = totals[item] or { produced = 0, consumed = 0 }
-      totals[item].produced = totals[item].produced + count
-    end
+    -- LuaFlowStatistics uses "input" for the left side of the item GUI
+    -- (production) and "output" for the right side (consumption).
     for item, count in pairs(statistics.input_counts) do
-      totals[item] = totals[item] or { produced = 0, consumed = 0 }
+      totals[item] = totals[item] or { produced = 0, consumed = 0, productionRate = 0, consumptionRate = 0 }
+      totals[item].produced = totals[item].produced + count
+      totals[item].productionRate = totals[item].productionRate + statistics.get_flow_count {
+        name = item,
+        category = 'input',
+        precision_index = defines.flow_precision_index.one_minute
+      }
+    end
+    for item, count in pairs(statistics.output_counts) do
+      totals[item] = totals[item] or { produced = 0, consumed = 0, productionRate = 0, consumptionRate = 0 }
       totals[item].consumed = totals[item].consumed + count
+      totals[item].consumptionRate = totals[item].consumptionRate + statistics.get_flow_count {
+        name = item,
+        category = 'output',
+        precision_index = defines.flow_precision_index.one_minute
+      }
     end
   end
 
   for item, counts in pairs(totals) do
-    table.insert(result, { item = item, produced = counts.produced, consumed = counts.consumed })
+    table.insert(result, {
+      item = item,
+      produced = counts.produced,
+      consumed = counts.consumed,
+      productionRate = counts.productionRate,
+      consumptionRate = counts.consumptionRate
+    })
   end
   table.sort(result, function(left, right) return left.item < right.item end)
   return result

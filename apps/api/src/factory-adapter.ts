@@ -14,9 +14,15 @@ export type PlayerState = {
   personalActivity: { handCrafted: number; mined: number; built: number; deaths: number };
 };
 
-export type ProductionCounter = { item: string; produced: number; consumed: number };
+export type ProductionCounter = {
+  item: string;
+  produced: number;
+  consumed: number;
+  productionRate: number;
+  consumptionRate: number;
+};
 export type FactorySnapshot = {
-  contractVersion: 1;
+  contractVersion: 2;
   generatedAt: string;
   server: ServerState;
   players: PlayerState[];

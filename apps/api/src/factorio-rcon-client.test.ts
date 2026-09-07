@@ -17,7 +17,7 @@ test('handles Factorio empty auth response before auth confirmation', async () =
     const response = await executeFactorioRconCommand({
       host: '127.0.0.1', port: address.port, password: 'test-password', timeoutMs: 1_000
     }, '/hal-telemetry snapshot 0');
-    assert.equal(response, 'HAL_TELEMETRY_V1:{"contractVersion":1}');
+    assert.equal(response, 'HAL_TELEMETRY_V2:{"contractVersion":2}');
   } finally {
     server.close();
     await once(server, 'close');
@@ -44,7 +44,7 @@ function serveFactorioRcon(socket: Socket) {
       } else {
         assert.equal(packet.type, 2);
         assert.equal(packet.body.toString('utf8'), '/hal-telemetry snapshot 0');
-        const response = encode({ id: packet.id, type: 0, body: Buffer.from('HAL_TELEMETRY_V1:{"contractVersion":1}') });
+        const response = encode({ id: packet.id, type: 0, body: Buffer.from('HAL_TELEMETRY_V2:{"contractVersion":2}') });
         socket.write(response.subarray(0, 9));
         socket.write(response.subarray(9));
       }

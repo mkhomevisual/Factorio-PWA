@@ -16,6 +16,7 @@ import type { FactoryAdapter } from './factory-adapter.js';
 import { MockFactoryAdapter } from './mock-adapter.js';
 import { FactorioRconAdapter } from './rcon-adapter.js';
 import { FactorioLogTailer } from './log-tailer.js';
+import { summarizeProduction } from './production.js';
 
 const SESSION_COOKIE = 'hal_session';
 const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
@@ -164,6 +165,8 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
   app.get('/api/dashboard', async (request, reply) => {
     if (!requireUser(db, request, reply)) return;
     const snapshot = await adapter.getSnapshot();
+    const lastSave = db.prepare("SELECT occurred_at FROM activity_events WHERE event_type='save.completed' ORDER BY occurred_at DESC LIMIT 1").get() as { occurred_at: string } | undefined;
+    if (lastSave) snapshot.server.lastSaveAt = lastSave.occurred_at;
     const tasks = db.prepare("SELECT id,title,status,priority,location FROM tasks WHERE status != 'Done' ORDER BY priority DESC, updated_at DESC LIMIT 5").all();
     const activity = db.prepare('SELECT event_type,payload_json,occurred_at FROM activity_events ORDER BY occurred_at DESC LIMIT 12').all();
     return { snapshot, tasks, activity, appUptimeSeconds: Math.floor(process.uptime()) };
@@ -298,27 +301,20 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
         const wave = 0.83 + Math.sin(index / 3.2) * 0.13 + Math.cos(index / 7) * 0.04;
         return { at: new Date(Date.now() - (pointCount - index - 1) * stepMinutes * 60_000).toISOString(), productionRate: Math.round(4_900 * wave), consumptionRate: Math.round(4_430 * wave) };
       });
-      return { range: query.data.range, points, topItems: snapshot.sharedFactory.map((item) => ({ item: item.item, produced: item.produced, consumed: item.consumed })).sort((a, b) => b.produced - a.produced).slice(0, 8) };
+      const topProduced = [...snapshot.sharedFactory].sort((a, b) => b.productionRate - a.productionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.productionRate, rate: item.productionRate }));
+      const topConsumed = [...snapshot.sharedFactory].sort((a, b) => b.consumptionRate - a.consumptionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.consumptionRate, rate: item.consumptionRate }));
+      return { range: query.data.range, points, topProduced, topConsumed, sampleCount: pointCount, basis: 'current', lastUpdatedAt: snapshot.generatedAt };
     }
     const cutoff = new Date(Date.now() - minutes * 60_000).toISOString();
-    const rows = db.prepare("SELECT collected_at,payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND collected_at>=? ORDER BY collected_at").all(cutoff) as Array<{ collected_at: string; payload: Buffer }>;
+    const rows = db.prepare("SELECT collected_at,payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version=2 AND collected_at>=? ORDER BY collected_at").all(cutoff) as Array<{ collected_at: string; payload: Buffer }>;
     const snapshots = rows.flatMap((row) => {
-      try { return [{ collectedAt: row.collected_at, snapshot: JSON.parse(gunzipSync(row.payload).toString('utf8')) as { sharedFactory: Array<{ item: string; produced: number; consumed: number }> } }]; }
+      try {
+        const snapshot = JSON.parse(gunzipSync(row.payload).toString('utf8')) as { sharedFactory: import('./factory-adapter.js').ProductionCounter[] };
+        return [{ collectedAt: row.collected_at, sharedFactory: snapshot.sharedFactory }];
+      }
       catch { return []; }
     });
-    const points = snapshots.slice(1).map((entry, index) => {
-      const previous = snapshots[index];
-      const elapsedMinutes = Math.max(1 / 60, (new Date(entry.collectedAt).getTime() - new Date(previous.collectedAt).getTime()) / 60_000);
-      const before = new Map(previous.snapshot.sharedFactory.map((item) => [item.item, item]));
-      const totals = entry.snapshot.sharedFactory.reduce((sum, item) => {
-        const old = before.get(item.item);
-        return { produced: sum.produced + Math.max(0, item.produced - (old?.produced ?? 0)), consumed: sum.consumed + Math.max(0, item.consumed - (old?.consumed ?? 0)) };
-      }, { produced: 0, consumed: 0 });
-      return { at: entry.collectedAt, productionRate: Math.round(totals.produced / elapsedMinutes), consumptionRate: Math.round(totals.consumed / elapsedMinutes) };
-    });
-    const initial = new Map((snapshots[0]?.snapshot.sharedFactory ?? []).map((item) => [item.item, item]));
-    const topItems = (snapshots.at(-1)?.snapshot.sharedFactory ?? []).map((item) => ({ item: item.item, produced: Math.max(0, item.produced - (initial.get(item.item)?.produced ?? 0)), consumed: Math.max(0, item.consumed - (initial.get(item.item)?.consumed ?? 0)) })).sort((a, b) => b.produced - a.produced).slice(0, 8);
-    return { range: query.data.range, points, topItems };
+    return { range: query.data.range, ...summarizeProduction(snapshots) };
   });
 
   app.get('/api/icons/:prototype', async (request, reply) => {
@@ -328,7 +324,19 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     const iconPath = resolve(config.FACTORIO_ICON_DIR, `${params.data.prototype}.png`);
     // The strict prototype allow-list above keeps this endpoint inside the configured directory.
     if (!existsSync(iconPath)) return reply.code(404).send({ error: 'Icon is not installed.' });
-    return reply.type('image/png').send(await readFile(iconPath));
+    return reply.header('cache-control', 'private, max-age=604800, immutable').type('image/png').send(await readFile(iconPath));
+  });
+
+  app.get('/api/prototypes', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    const labelsPath = resolve(config.FACTORIO_ICON_DIR, 'labels.cs.json');
+    try {
+      const labels = JSON.parse(await readFile(labelsPath, 'utf8')) as Record<string, string>;
+      return reply.header('cache-control', 'private, max-age=3600').send({ locale: 'cs', labels });
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { locale: 'cs', labels: {} };
+      throw error;
+    }
   });
 
   app.post('/api/server/telemetry-refresh', async (request, reply) => {
