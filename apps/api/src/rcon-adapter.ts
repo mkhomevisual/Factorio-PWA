@@ -38,10 +38,10 @@ export class FactorioRconAdapter implements FactoryAdapter {
     };
   }
 
-  async save() { await this.command('/save'); }
+  async save() { await this.command('/server-save'); }
   async sendMessage(message: string) {
     const safe = message.replace(/[\r\n]/g, ' ').slice(0, 250);
-    await this.command(`/silent-command game.print(${JSON.stringify('[HAL] ' + safe)})`);
+    await this.command(`[HAL] ${safe}`);
   }
 }
 
