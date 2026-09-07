@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { config } from './config.js';
 import { openDatabase } from './db.js';
 import type { AppDatabase } from './db.js';
-import type { FactoryAdapter } from './factory-adapter.js';
+import type { FactoryAdapter, FactorySnapshot } from './factory-adapter.js';
 import { MockFactoryAdapter } from './mock-adapter.js';
 import { FactorioRconAdapter } from './rcon-adapter.js';
 import { FactorioLogTailer } from './log-tailer.js';
@@ -80,19 +80,44 @@ function listTasks(db: AppDatabase) {
   }));
 }
 
+function storedSnapshot(db: AppDatabase): FactorySnapshot | null {
+  const row = db.prepare("SELECT payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version=2 ORDER BY collected_at DESC LIMIT 1").get() as { payload: Buffer } | undefined;
+  if (!row) return null;
+  try {
+    const snapshot = JSON.parse(gunzipSync(row.payload).toString('utf8')) as FactorySnapshot;
+    return snapshot.contractVersion === 2 && Array.isArray(snapshot.players) && Array.isArray(snapshot.sharedFactory) ? snapshot : null;
+  } catch { return null; }
+}
+
+function unavailableSnapshot(): FactorySnapshot {
+  return {
+    contractVersion: 2,
+    generatedAt: timestamp(),
+    server: { online: false, version: null, gameState: 'unknown', uptimeSeconds: null, lastSaveAt: null },
+    players: [],
+    sharedFactory: [],
+    events: []
+  };
+}
+
 class TelemetryPoller {
   private timer: NodeJS.Timeout | undefined;
   private busy = false;
-  constructor(private readonly db: AppDatabase, private readonly adapter: FactoryAdapter) {}
+  private latestSnapshot: FactorySnapshot | null;
+  constructor(private readonly db: AppDatabase, private readonly adapter: FactoryAdapter) {
+    this.latestSnapshot = storedSnapshot(db);
+  }
 
-  start() { void this.poll(); this.timer = setInterval(() => void this.poll(), 60_000); }
+  async start() { await this.poll(); this.timer = setInterval(() => void this.poll(), 60_000); }
   stop() { if (this.timer) clearInterval(this.timer); }
+  latest() { return structuredClone(this.latestSnapshot ?? unavailableSnapshot()); }
   async poll() {
     if (this.busy) return;
     this.busy = true;
     try {
       const previousCursor = this.db.prepare('SELECT cursor FROM telemetry_cursors WHERE source=?').get('hal-telemetry') as { cursor: string } | undefined;
       const snapshot = await this.adapter.getSnapshot(previousCursor?.cursor);
+      this.latestSnapshot = snapshot;
       const collectedAt = timestamp();
       this.db.prepare('INSERT INTO telemetry_snapshots(id,scope_type,scope_key,contract_version,collected_at,payload) VALUES(?,?,?,?,?,?)')
         .run(randomUUID(), 'shared', 'main', snapshot.contractVersion, collectedAt, gzipSync(JSON.stringify(snapshot)));
@@ -172,7 +197,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
 
   app.get('/api/dashboard', async (request, reply) => {
     if (!requireUser(db, request, reply)) return;
-    const snapshot = await adapter.getSnapshot();
+    const snapshot = poller.latest();
     const lastSave = db.prepare("SELECT occurred_at FROM activity_events WHERE event_type='save.completed' ORDER BY occurred_at DESC LIMIT 1").get() as { occurred_at: string } | undefined;
     if (lastSave) snapshot.server.lastSaveAt = lastSave.occurred_at;
     const tasks = db.prepare("SELECT id,title,status,priority,location FROM tasks WHERE status != 'Done' ORDER BY priority DESC, updated_at DESC LIMIT 5").all();
@@ -295,7 +320,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
 
   app.get('/api/profiles', async (request, reply) => {
     if (!requireUser(db, request, reply)) return;
-    const snapshot = await adapter.getSnapshot();
+    const snapshot = poller.latest();
     const users = db.prepare('SELECT id,login,display_name,factorio_name,color,last_online_at FROM users ORDER BY display_name').all() as Array<{ id: string; login: string; display_name: string; factorio_name: string; color: string; last_online_at: string | null }>;
     const completed = db.prepare(`SELECT ta.user_id, count(*) AS count FROM task_assignees ta JOIN tasks t ON t.id=ta.task_id WHERE t.status='Done' GROUP BY ta.user_id`).all() as Array<{ user_id: string; count: number }>;
     return users.map((entry) => {
@@ -431,7 +456,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     void app.register(fastifyStatic, { root: webRoot, wildcard: false });
     app.setNotFoundHandler((request, reply) => request.url.startsWith('/api/') ? reply.code(404).send({ error: 'Not found.' }) : reply.sendFile('index.html'));
   }
-  app.addHook('onReady', () => { poller.start(); logTailer.start(); });
+  app.addHook('onReady', async () => { await poller.start(); logTailer.start(); });
   app.addHook('onClose', () => { poller.stop(); logTailer.stop(); db.close(); });
   return app;
 }

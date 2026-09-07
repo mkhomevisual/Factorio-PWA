@@ -4,6 +4,7 @@ import type { FactoryAdapter, FactorySnapshot } from './factory-adapter.js';
 import type { Config } from './config.js';
 
 const PREFIX = 'HAL_TELEMETRY_V2:';
+const LEGACY_PREFIX = 'HAL_TELEMETRY_V1:';
 const ERROR_PREFIX = 'HAL_TELEMETRY_ERROR:';
 
 export class FactorioRconAdapter implements FactoryAdapter {
@@ -24,6 +25,7 @@ export class FactorioRconAdapter implements FactoryAdapter {
     const json = response.split(/\r?\n/).find((line) => line.startsWith(PREFIX))?.slice(PREFIX.length);
     const telemetryError = response.split(/\r?\n/).find((line) => line.startsWith(ERROR_PREFIX))?.slice(ERROR_PREFIX.length);
     if (telemetryError) throw new Error(`Telemetry mod failed: ${telemetryError}`);
+    if (response.includes(LEGACY_PREFIX)) throw new Error('HAL telemetry mod is outdated (V1); install hal-telemetry 0.2.0 or newer.');
     if (!json) throw new Error('Telemetry mod did not return a HAL_TELEMETRY_V2 response.');
     const raw = JSON.parse(json) as {
       contractVersion: number; server: FactorySnapshot['server']; players: FactorySnapshot['players']; sharedFactory: FactorySnapshot['sharedFactory'];

@@ -166,7 +166,7 @@ function DashboardView({ data, refresh, refreshing }: { data: Dashboard; refresh
   const productionRate = data.snapshot.sharedFactory.reduce((sum, item) => sum + Math.max(0, item.productionRate), 0);
   const consumptionRate = data.snapshot.sharedFactory.reduce((sum, item) => sum + Math.max(0, item.consumptionRate), 0);
   return <section className="content">
-    <PageHeader eyebrow="ŽIVÝ PŘEHLED" title="Dobré směny." description={`Továrna naposledy odpověděla ${timeAgo(data.snapshot.generatedAt)}.`} actions={<button className="secondary with-icon" onClick={refresh} disabled={refreshing}><Glyph name="refresh" />{refreshing ? 'Obnovuji…' : 'Obnovit'}</button>} />
+    <PageHeader eyebrow="ŽIVÝ PŘEHLED" title="Dobré směny." description={server.online ? `Továrna naposledy odpověděla ${timeAgo(data.snapshot.generatedAt)}.` : 'Čekám na živou odpověď Factorio telemetry.'} actions={<button className="secondary with-icon" onClick={refresh} disabled={refreshing}><Glyph name="refresh" />{refreshing ? 'Obnovuji…' : 'Obnovit'}</button>} />
     <div className="status-grid">
       <article className="server-state"><span className={`lamp ${server.online ? 'online' : ''}`} /><div><small>Factorio server</small><strong>{server.online ? 'Online' : 'Offline'}</strong><span>{server.version ?? 'Verze neznámá'} · {server.gameState === 'running' ? 'hra běží' : server.gameState}</span></div></article>
       <Metric label="Aktuální výroba" value={`${compactNumber.format(productionRate)} / min`} note="všechny povrchy" tone="production" />
