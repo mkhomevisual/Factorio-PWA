@@ -9,13 +9,18 @@ services:
       FACTORIO_RCON_HOST: server
       FACTORIO_RCON_PORT: "27015"
       RCON_PASSWORD_FILE: /run/secrets/factorio_rcon_password
+      # Read by jwilder/nginx-proxy and its Let's Encrypt companion.
+      VIRTUAL_HOST: ${VIRTUAL_HOST}
+      VIRTUAL_PORT: "3000"
+      LETSENCRYPT_HOST: ${VIRTUAL_HOST}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
     secrets:
       - factorio_rcon_password
     volumes:
       - /srv/factorio/data/factorio-current.log:/factorio/factorio-current.log:ro
     networks:
       - factorio_default
-      - nginx-network
+      - nginx-proxy
 
 secrets:
   factorio_rcon_password:
@@ -24,5 +29,5 @@ secrets:
 networks:
   factorio_default:
     external: true
-  nginx-network:
+  nginx-proxy:
     external: true
