@@ -56,6 +56,8 @@ Produkční override připojuje `factorio-current.log` pouze pro čtení. Backen
 
 Mod `hal-telemetry` 0.2.0 používá kontrakt V2. Z Factorio 2 čte správnou dvojici item flow statistik (`input` = výroba, `output` = spotřeba), kumulativní počitadla a přímo herní klouzavé rychlosti za jednu minutu. Aplikace ukládá minutové vzorky, staré V1 vzorky při výpočtu grafů záměrně ignoruje a samostatně řadí nejvíce vyráběné a spotřebovávané položky.
 
+Každý Docker build zároveň vytvoří validní Factorio archiv `hal-telemetry_<verze>.zip` přímo z adresáře modu. Přihlášený uživatel si přesně tuto verzi stáhne v sekci **Server**, takže soubor není nutné ručně kopírovat přes SSH.
+
 ## Stav implementace
 
-Hotovo: jeden non-root Docker kontejner, healthcheck, persistentní SQLite/asset volume, PWA, sessions/CSRF/login rate-limit, přesný RCON klient, telemetry V2, minutové výrobní grafy, Factorio ikony a české názvy, activity/log tailer, společné úkoly, profily a responzivní světlé i tmavé UI.
+Hotovo: jeden non-root Docker kontejner, healthcheck, persistentní SQLite/asset volume, PWA, sessions/CSRF/login rate-limit, přesný RCON klient, telemetry V2, minutové výrobní grafy s filtrem konkrétního itemu, Factorio ikony a české názvy, activity/log tailer, barevně rozlišené společné úkoly s náhledy checklistů a komentářů, sdílené Vzkazy, profily, stažení aktuálního modu a responzivní světlé i tmavé UI.

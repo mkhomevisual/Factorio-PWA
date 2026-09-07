@@ -69,7 +69,15 @@ function listTasks(db: AppDatabase) {
       COALESCE((SELECT json_group_array(tag) FROM task_tags WHERE task_id=t.id), '[]') AS tags
     FROM tasks t ORDER BY CASE t.status WHEN 'Now' THEN 1 WHEN 'Next' THEN 2 WHEN 'Later' THEN 3 ELSE 4 END, t.priority DESC, t.updated_at DESC`).all() as Array<Record<string, unknown> & { id: string; assignee_ids: string; tags: string }>;
   const checklist = db.prepare('SELECT id, task_id, text, is_done, position FROM task_checklist_items ORDER BY position').all() as Array<{ task_id: string; id: string; text: string; is_done: number; position: number }>;
-  return tasks.map((task) => ({ ...task, assigneeIds: JSON.parse(task.assignee_ids), tags: JSON.parse(task.tags), checklist: checklist.filter((item) => item.task_id === task.id).map(({ task_id: _taskId, ...item }) => ({ ...item, isDone: Boolean(item.is_done) })) }));
+  const comments = db.prepare(`SELECT c.id,c.task_id,c.body,c.created_at,u.display_name,u.color
+    FROM task_comments c JOIN users u ON u.id=c.user_id ORDER BY c.created_at`).all() as Array<{ task_id: string; id: string; body: string; created_at: string; display_name: string; color: string }>;
+  return tasks.map((task) => ({
+    ...task,
+    assigneeIds: JSON.parse(task.assignee_ids),
+    tags: JSON.parse(task.tags),
+    checklist: checklist.filter((item) => item.task_id === task.id).map(({ task_id: _taskId, ...item }) => ({ ...item, isDone: Boolean(item.is_done) })),
+    comments: comments.filter((comment) => comment.task_id === task.id).map(({ task_id: _taskId, ...comment }) => comment)
+  }));
 }
 
 class TelemetryPoller {
@@ -232,9 +240,8 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     if (!params.success) return reply.code(400).send({ error: 'Invalid task id.' });
     const task = listTasks(db).find((item) => item.id === params.data.id);
     if (!task) return reply.code(404).send({ error: 'Task not found.' });
-    const comments = db.prepare(`SELECT c.id,c.body,c.created_at,u.display_name,u.color FROM task_comments c JOIN users u ON u.id=c.user_id WHERE c.task_id=? ORDER BY c.created_at`).all(params.data.id);
     const history = db.prepare(`SELECT h.id,h.action,h.detail_json,h.created_at,u.display_name FROM task_history h JOIN users u ON u.id=h.user_id WHERE h.task_id=? ORDER BY h.created_at DESC`).all(params.data.id) as Array<{ id: string; action: string; detail_json: string; created_at: string; display_name: string }>;
-    return { ...task, comments, history: history.map((entry) => ({ ...entry, detail: JSON.parse(entry.detail_json) })) };
+    return { ...task, history: history.map((entry) => ({ ...entry, detail: JSON.parse(entry.detail_json) })) };
   });
 
   app.post('/api/tasks/:id/checklist', async (request, reply) => {
@@ -269,6 +276,23 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     return { ok: true };
   });
 
+  app.get('/api/messages', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    return db.prepare(`SELECT m.id,m.body,m.created_at,u.id AS user_id,u.display_name,u.color
+      FROM messages m JOIN users u ON u.id=m.user_id ORDER BY m.created_at DESC LIMIT 100`).all();
+  });
+
+  app.post('/api/messages', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const body = z.object({ body: z.string().trim().min(1).max(2_000) }).safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: 'Invalid message.' });
+    const id = randomUUID();
+    const createdAt = timestamp();
+    db.prepare('INSERT INTO messages(id,user_id,body,created_at) VALUES(?,?,?,?)').run(id, user.id, body.data.body, createdAt);
+    recordActivity(db, 'message.created', user.id, { messageId: id });
+    return reply.code(201).send({ id, createdAt });
+  });
+
   app.get('/api/profiles', async (request, reply) => {
     if (!requireUser(db, request, reply)) return;
     const snapshot = await adapter.getSnapshot();
@@ -289,7 +313,10 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
 
   app.get('/api/production', async (request, reply) => {
     if (!requireUser(db, request, reply)) return;
-    const query = z.object({ range: z.enum(['15m', '1h', '6h', '24h']).default('1h') }).safeParse(request.query);
+    const query = z.object({
+      range: z.enum(['15m', '1h', '6h', '24h']).default('1h'),
+      item: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/).optional()
+    }).safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: 'Invalid production range.' });
     const minutesByRange = { '15m': 15, '1h': 60, '6h': 360, '24h': 1440 } as const;
     const minutes = minutesByRange[query.data.range];
@@ -297,13 +324,17 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       const snapshot = await adapter.getSnapshot();
       const pointCount = query.data.range === '24h' ? 24 : query.data.range === '6h' ? 36 : 30;
       const stepMinutes = minutes / pointCount;
+      const selectedCounter = query.data.item ? snapshot.sharedFactory.find((entry) => entry.item === query.data.item) : undefined;
       const points = Array.from({ length: pointCount }, (_, index) => {
         const wave = 0.83 + Math.sin(index / 3.2) * 0.13 + Math.cos(index / 7) * 0.04;
-        return { at: new Date(Date.now() - (pointCount - index - 1) * stepMinutes * 60_000).toISOString(), productionRate: Math.round(4_900 * wave), consumptionRate: Math.round(4_430 * wave) };
+        const productionRate = query.data.item ? selectedCounter?.productionRate ?? 0 : 4_900;
+        const consumptionRate = query.data.item ? selectedCounter?.consumptionRate ?? 0 : 4_430;
+        return { at: new Date(Date.now() - (pointCount - index - 1) * stepMinutes * 60_000).toISOString(), productionRate: Math.round(productionRate * wave), consumptionRate: Math.round(consumptionRate * wave) };
       });
       const topProduced = [...snapshot.sharedFactory].sort((a, b) => b.productionRate - a.productionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.productionRate, rate: item.productionRate }));
       const topConsumed = [...snapshot.sharedFactory].sort((a, b) => b.consumptionRate - a.consumptionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.consumptionRate, rate: item.consumptionRate }));
-      return { range: query.data.range, points, topProduced, topConsumed, sampleCount: pointCount, basis: 'current', lastUpdatedAt: snapshot.generatedAt };
+      const availableItems = [...snapshot.sharedFactory].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate)).map((item) => item.item);
+      return { range: query.data.range, points, topProduced, topConsumed, availableItems, selectedItem: query.data.item ?? null, sampleCount: pointCount, basis: 'current', lastUpdatedAt: snapshot.generatedAt };
     }
     const cutoff = new Date(Date.now() - minutes * 60_000).toISOString();
     const rows = db.prepare("SELECT collected_at,payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version=2 AND collected_at>=? ORDER BY collected_at").all(cutoff) as Array<{ collected_at: string; payload: Buffer }>;
@@ -314,7 +345,15 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       }
       catch { return []; }
     });
-    return { range: query.data.range, ...summarizeProduction(snapshots) };
+    const summary = summarizeProduction(snapshots);
+    const latest = snapshots.at(-1);
+    const availableItems = [...(latest?.sharedFactory ?? [])]
+      .sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate))
+      .map((item) => item.item);
+    const points = query.data.item
+      ? summarizeProduction(snapshots.map((snapshot) => ({ ...snapshot, sharedFactory: snapshot.sharedFactory.filter((item) => item.item === query.data.item) }))).points
+      : summary.points;
+    return { range: query.data.range, ...summary, points, availableItems, selectedItem: query.data.item ?? null };
   });
 
   app.get('/api/icons/:prototype', async (request, reply) => {
@@ -336,6 +375,32 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     } catch (error) {
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { locale: 'cs', labels: {} };
       throw error;
+    }
+  });
+
+  app.get('/api/downloads/hal-telemetry/info', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    try {
+      const manifest = JSON.parse(await readFile(resolve(config.TELEMETRY_DOWNLOAD_DIR, 'hal-telemetry-manifest.json'), 'utf8')) as { name: string; version: string; fileName: string; size: number };
+      return reply.header('cache-control', 'private, no-store').send(manifest);
+    } catch {
+      return reply.code(404).send({ error: 'Telemetry download is not available.' });
+    }
+  });
+
+  app.get('/api/downloads/hal-telemetry', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    try {
+      const manifest = JSON.parse(await readFile(resolve(config.TELEMETRY_DOWNLOAD_DIR, 'hal-telemetry-manifest.json'), 'utf8')) as { fileName: string };
+      if (!/^hal-telemetry_[0-9]+(?:\.[0-9]+)*\.zip$/.test(manifest.fileName)) throw new Error('Invalid telemetry manifest.');
+      const archive = await readFile(resolve(config.TELEMETRY_DOWNLOAD_DIR, manifest.fileName));
+      return reply
+        .header('cache-control', 'private, no-store')
+        .header('content-disposition', `attachment; filename="${manifest.fileName}"`)
+        .type('application/zip')
+        .send(archive);
+    } catch {
+      return reply.code(404).send({ error: 'Telemetry download is not available.' });
     }
   });
 

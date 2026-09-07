@@ -5,7 +5,10 @@ COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 RUN npm ci
 COPY apps ./apps
+COPY mods ./mods
+COPY scripts ./scripts
 RUN npm run build
+RUN node scripts/build-mod-zip.mjs mods/hal-telemetry /app/downloads
 
 FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production
@@ -17,6 +20,7 @@ COPY apps/web/package.json apps/web/package.json
 RUN npm ci --omit=dev --workspace=@hal/api && npm cache clean --force
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/web/dist ./apps/web/dist
+COPY --from=build /app/downloads ./downloads
 RUN mkdir -p /app/data && chown -R hal:hal /app
 USER hal
 EXPOSE 3000

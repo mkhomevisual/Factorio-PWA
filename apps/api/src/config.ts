@@ -5,6 +5,7 @@ const environment = z.object({
   APP_PORT: z.coerce.number().int().positive().default(3000),
   DATABASE_PATH: z.string().default('/app/data/hal-factory-control.db'),
   FACTORIO_ICON_DIR: z.string().default('/app/data/factorio-icons'),
+  TELEMETRY_DOWNLOAD_DIR: z.string().default('/app/downloads'),
   FACTORY_MODE: z.enum(['mock', 'factorio-rcon']).default('mock'),
   FACTORIO_RCON_HOST: z.string().default('server'),
   FACTORIO_RCON_PORT: z.coerce.number().int().positive().default(27015),

@@ -72,6 +72,13 @@ export function openDatabase(path: string): AppDatabase {
       detail_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS messages_created_at ON messages(created_at DESC);
     CREATE TABLE IF NOT EXISTS activity_events (
       id TEXT PRIMARY KEY,
       source TEXT NOT NULL,
