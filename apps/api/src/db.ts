@@ -76,9 +76,24 @@ export function openDatabase(path: string): AppDatabase {
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id),
       body TEXT NOT NULL,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      is_pinned INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS messages_created_at ON messages(created_at DESC);
+    CREATE TABLE IF NOT EXISTS message_reactions (
+      message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      emoji TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(message_id, user_id, emoji)
+    );
+    CREATE TABLE IF NOT EXISTS message_reads (
+      message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      read_at TEXT NOT NULL,
+      PRIMARY KEY(message_id, user_id)
+    );
     CREATE TABLE IF NOT EXISTS activity_events (
       id TEXT PRIMARY KEY,
       source TEXT NOT NULL,
@@ -113,5 +128,16 @@ export function openDatabase(path: string): AppDatabase {
     );
     CREATE INDEX IF NOT EXISTS telemetry_snapshots_scope_time ON telemetry_snapshots(scope_type, scope_key, collected_at DESC);
   `);
+
+  // Additive migrations keep the existing production volume and all user data.
+  const columns = (table: string) => new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
+  const taskColumns = columns('tasks');
+  if (!taskColumns.has('due_at')) db.exec('ALTER TABLE tasks ADD COLUMN due_at TEXT');
+  if (!taskColumns.has('is_pinned')) db.exec('ALTER TABLE tasks ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0');
+  if (!taskColumns.has('is_archived')) db.exec('ALTER TABLE tasks ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0');
+  if (!taskColumns.has('position')) db.exec('ALTER TABLE tasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
+  const messageColumns = columns('messages');
+  if (!messageColumns.has('updated_at')) db.exec('ALTER TABLE messages ADD COLUMN updated_at TEXT');
+  if (!messageColumns.has('is_pinned')) db.exec('ALTER TABLE messages ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0');
   return db;
 }

@@ -107,12 +107,15 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); }
 .banner.global { position: sticky; z-index: 8; top: 12px; width: min(calc(100% - 32px), 900px); margin: 12px auto -4px; }
 .notice { width: fit-content; margin-top: 18px; padding: 12px 15px; border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--success) 8%, var(--surface)); color: var(--text); }
 .footnote { margin: 4px 2px 0; color: var(--text-tertiary); font-size: .83rem; }
-.mobile-header, .app-main > .navigation { display: none; }
+.mobile-header, .mobile-menu-backdrop { display: none; }
+.language-toggle { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--field); }
+.language-toggle button { min-height: 28px; padding: 0 8px; border-radius: 6px; background: transparent; color: var(--text-tertiary); font-size: .64rem; }
+.language-toggle button.active { background: var(--accent); color: var(--accent-ink); }
 
 @media (max-width: 860px) {
   body { background: var(--canvas); }
   .sidebar { display: none !important; }
-  .app-main { padding: 0 0 calc(78px + env(safe-area-inset-bottom)); }
+  .app-main { padding: 0; }
   .mobile-header { position: sticky; z-index: 9; top: 0; display: flex; align-items: center; justify-content: space-between; min-height: 62px; padding: 9px 16px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--canvas) 92%, transparent); backdrop-filter: blur(18px); }
   .mobile-header .brand { margin: 0; }
   .mobile-header .brand-mark { width: 35px; height: 35px; font-size: 1rem; }
@@ -122,9 +125,16 @@ input::placeholder, textarea::placeholder { color: var(--text-tertiary); }
   .page-header { align-items: flex-start; margin-bottom: 22px; }
   .page-header h1 { font-size: clamp(2rem, 10vw, 2.6rem); }
   .page-description { margin-top: 9px; font-size: .9rem; }
-  .app-main > .navigation { position: fixed; z-index: 20; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(7, 1fr); padding: 7px max(6px, env(safe-area-inset-right)) calc(7px + env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left)); border-top: 1px solid var(--border); background: color-mix(in srgb, var(--sidebar) 94%, transparent); box-shadow: 0 -10px 30px rgba(0, 0, 0, .12); backdrop-filter: blur(20px); }
-  .app-main > .navigation button { min-width: 0; min-height: 54px; padding: 5px 1px; justify-content: center; gap: 2px; border-radius: 9px; font-size: .59rem; }
-  .app-main > .navigation .glyph { width: 20px; height: 20px; }
+  .mobile-menu-backdrop { position: fixed; z-index: 60; inset: 0; display: flex; justify-content: flex-end; background: rgba(3, 6, 4, .6); backdrop-filter: blur(6px); }
+  .mobile-menu { width: min(88vw, 360px); min-height: 100%; display: flex; flex-direction: column; padding: calc(16px + env(safe-area-inset-top)) 16px calc(18px + env(safe-area-inset-bottom)); border-left: 1px solid var(--border); background: var(--sidebar); box-shadow: var(--shadow-lg); animation: menu-in .18s ease-out; }
+  .mobile-menu > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+  .mobile-menu .navigation { margin-top: 16px; }
+  .mobile-menu .navigation button { min-height: 50px; font-size: .9rem; }
+  .mobile-menu > footer { display: flex; align-items: flex-end; gap: 8px; margin-top: auto; padding-top: 18px; border-top: 1px solid var(--border); }
+  .mobile-menu > footer > div:first-child { display: grid; gap: 6px; margin-right: auto; }
+  .mobile-menu > footer > div:first-child > small { font-size: .62rem; }
+  .mobile-menu > footer .secondary { min-width: 44px; padding: 0 11px; }
+  @keyframes menu-in { from { opacity: 0; transform: translateX(22px); } }
 }
 
 @media (max-width: 560px) {

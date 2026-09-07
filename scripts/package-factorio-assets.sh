@@ -24,10 +24,12 @@ for mod_dir in "$source_data"/*; do
     mkdir -p "$staging_dir/$mod_name/graphics"
     cp -R "$mod_dir/graphics/icons" "$staging_dir/$mod_name/graphics/icons"
   fi
-  if [[ -d "$mod_dir/locale/cs" ]]; then
-    mkdir -p "$staging_dir/$mod_name/locale"
-    cp -R "$mod_dir/locale/cs" "$staging_dir/$mod_name/locale/cs"
-  fi
+  for locale in cs en; do
+    if [[ -d "$mod_dir/locale/$locale" ]]; then
+      mkdir -p "$staging_dir/$mod_name/locale"
+      cp -R "$mod_dir/locale/$locale" "$staging_dir/$mod_name/locale/$locale"
+    fi
+  done
 done
 
 mkdir -p "$(dirname "$output_archive")"

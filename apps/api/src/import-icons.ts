@@ -44,9 +44,11 @@ mods.sort((a, b) => {
 
 const labelSections = ['recipe-name', 'equipment-name', 'tile-name', 'entity-name', 'fluid-name', 'item-name'] as const;
 type LabelSection = typeof labelSections[number];
-const labelsBySection = Object.fromEntries(labelSections.map((section) => [section, new Map<string, string>()])) as Record<LabelSection, Map<string, string>>;
+const locales = ['cs', 'en'] as const;
+type Locale = typeof locales[number];
+const labelsByLocale = Object.fromEntries(locales.map((locale) => [locale, Object.fromEntries(labelSections.map((section) => [section, new Map<string, string>()]))])) as Record<Locale, Record<LabelSection, Map<string, string>>>;
 
-function parseLocale(contents: string) {
+function parseLocale(locale: Locale, contents: string) {
   let section = '';
   for (const rawLine of contents.replace(/^\uFEFF/, '').split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -57,17 +59,19 @@ function parseLocale(contents: string) {
     if (separator < 1) continue;
     const key = line.slice(0, separator).trim();
     const value = line.slice(separator + 1).trim();
-    if (/^[a-z0-9][a-z0-9_-]*$/.test(key) && value) labelsBySection[section as LabelSection].set(key, value);
+    if (/^[a-z0-9][a-z0-9_-]*$/.test(key) && value) labelsByLocale[locale][section as LabelSection].set(key, value);
   }
 }
 
 async function importLocales(modDirectory: string) {
-  const localeDirectory = join(modDirectory, 'locale', 'cs');
-  let entries;
-  try { entries = await readdir(localeDirectory, { withFileTypes: true }); }
-  catch (error) { if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return; throw error; }
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (entry.isFile() && extname(entry.name).toLowerCase() === '.cfg') parseLocale(await readFile(join(localeDirectory, entry.name), 'utf8'));
+  for (const locale of locales) {
+    const localeDirectory = join(modDirectory, 'locale', locale);
+    let entries;
+    try { entries = await readdir(localeDirectory, { withFileTypes: true }); }
+    catch (error) { if (error instanceof Error && 'code' in error && error.code === 'ENOENT') continue; throw error; }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.isFile() && extname(entry.name).toLowerCase() === '.cfg') parseLocale(locale, await readFile(join(localeDirectory, entry.name), 'utf8'));
+    }
   }
 }
 
@@ -79,19 +83,23 @@ for (const mod of mods) {
   await importLocales(join(source, mod.name));
 }
 
-const labels: Record<string, string> = {};
-for (const section of labelSections) for (const [prototype, label] of labelsBySection[section]) labels[prototype] = label;
 const referenceSections: Record<string, LabelSection> = { ITEM: 'item-name', FLUID: 'fluid-name', ENTITY: 'entity-name', EQUIPMENT: 'equipment-name', TILE: 'tile-name', RECIPE: 'recipe-name' };
-function resolveReferences(label: string) {
+function resolveReferences(locale: Locale, labels: Record<string, string>, label: string) {
   let result = label;
   for (let pass = 0; pass < 4; pass += 1) {
-    const next = result.replace(/__(ITEM|FLUID|ENTITY|EQUIPMENT|TILE|RECIPE)__([a-z0-9_-]+)__/g, (match, type: string, name: string) => labelsBySection[referenceSections[type]]?.get(name) ?? labels[name] ?? match);
+    const next = result.replace(/__(ITEM|FLUID|ENTITY|EQUIPMENT|TILE|RECIPE)__([a-z0-9_-]+)__/g, (match, type: string, name: string) => labelsByLocale[locale][referenceSections[type]]?.get(name) ?? labels[name] ?? match);
     if (next === result) break;
     result = next;
   }
   return result;
 }
-const sortedLabels = Object.fromEntries(Object.entries(labels).map(([prototype, label]) => [prototype, resolveReferences(label)]).sort(([left], [right]) => left.localeCompare(right)));
-await writeFile(join(destination, 'labels.cs.json'), `${JSON.stringify(sortedLabels)}\n`, 'utf8');
-await writeFile(join(destination, 'manifest.json'), `${JSON.stringify({ icons: importedIcons.size, labels: Object.keys(sortedLabels).length })}\n`, 'utf8');
-console.log(`Imported ${importedIcons.size} unique Factorio icons (${copied} source files) and ${Object.keys(sortedLabels).length} Czech labels.`);
+const labelCounts: Record<Locale, number> = { cs: 0, en: 0 };
+for (const locale of locales) {
+  const labels: Record<string, string> = {};
+  for (const section of labelSections) for (const [prototype, label] of labelsByLocale[locale][section]) labels[prototype] = label;
+  const sortedLabels = Object.fromEntries(Object.entries(labels).map(([prototype, label]) => [prototype, resolveReferences(locale, labels, label)]).sort(([left], [right]) => left.localeCompare(right)));
+  labelCounts[locale] = Object.keys(sortedLabels).length;
+  await writeFile(join(destination, `labels.${locale}.json`), `${JSON.stringify(sortedLabels)}\n`, 'utf8');
+}
+await writeFile(join(destination, 'manifest.json'), `${JSON.stringify({ icons: importedIcons.size, labels: labelCounts })}\n`, 'utf8');
+console.log(`Imported ${importedIcons.size} unique Factorio icons (${copied} source files), ${labelCounts.cs} Czech and ${labelCounts.en} English labels.`);

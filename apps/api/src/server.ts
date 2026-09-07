@@ -20,6 +20,7 @@ import { summarizeProduction } from './production.js';
 
 const SESSION_COOKIE = 'hal_session';
 const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
+const bundledIconDirectory = resolve(import.meta.dirname, '../../../assets/factorio-icons');
 const taskInput = z.object({
   title: z.string().trim().min(1).max(180),
   description: z.string().trim().max(10_000).default(''),
@@ -28,8 +29,12 @@ const taskInput = z.object({
   location: z.string().trim().max(100).nullable().optional(),
   blueprintString: z.string().max(100_000).nullable().optional(),
   tags: z.array(z.string().trim().min(1).max(32)).max(10).default([]),
-  assigneeIds: z.array(z.string().uuid()).min(1).max(2)
+  assigneeIds: z.array(z.string().uuid()).min(1).max(2),
+  dueAt: z.string().datetime().nullable().optional(),
+  isPinned: z.boolean().default(false),
+  isArchived: z.boolean().default(false)
 });
+const taskUpdateInput = taskInput.partial();
 
 type SessionUser = { id: string; login: string; displayName: string; factorioName: string; color: string; csrfToken: string };
 
@@ -67,16 +72,46 @@ function recordActivity(db: AppDatabase, eventType: string, actorUserId: string 
 function listTasks(db: AppDatabase) {
   const tasks = db.prepare(`SELECT t.*, COALESCE((SELECT json_group_array(user_id) FROM task_assignees WHERE task_id=t.id), '[]') AS assignee_ids,
       COALESCE((SELECT json_group_array(tag) FROM task_tags WHERE task_id=t.id), '[]') AS tags
-    FROM tasks t ORDER BY CASE t.status WHEN 'Now' THEN 1 WHEN 'Next' THEN 2 WHEN 'Later' THEN 3 ELSE 4 END, t.priority DESC, t.updated_at DESC`).all() as Array<Record<string, unknown> & { id: string; assignee_ids: string; tags: string }>;
+    FROM tasks t ORDER BY t.is_archived, t.is_pinned DESC, CASE t.status WHEN 'Now' THEN 1 WHEN 'Next' THEN 2 WHEN 'Later' THEN 3 ELSE 4 END, t.position, t.priority DESC, t.updated_at DESC`).all() as Array<Record<string, unknown> & { id: string; assignee_ids: string; tags: string; due_at: string | null; is_pinned: number; is_archived: number }>;
   const checklist = db.prepare('SELECT id, task_id, text, is_done, position FROM task_checklist_items ORDER BY position').all() as Array<{ task_id: string; id: string; text: string; is_done: number; position: number }>;
   const comments = db.prepare(`SELECT c.id,c.task_id,c.body,c.created_at,u.display_name,u.color
     FROM task_comments c JOIN users u ON u.id=c.user_id ORDER BY c.created_at`).all() as Array<{ task_id: string; id: string; body: string; created_at: string; display_name: string; color: string }>;
-  return tasks.map((task) => ({
+  return tasks.map(({ assignee_ids, due_at, is_pinned, is_archived, ...task }) => ({
     ...task,
-    assigneeIds: JSON.parse(task.assignee_ids),
+    assigneeIds: JSON.parse(assignee_ids),
     tags: JSON.parse(task.tags),
+    dueAt: due_at,
+    isPinned: Boolean(is_pinned),
+    isArchived: Boolean(is_archived),
     checklist: checklist.filter((item) => item.task_id === task.id).map(({ task_id: _taskId, ...item }) => ({ ...item, isDone: Boolean(item.is_done) })),
     comments: comments.filter((comment) => comment.task_id === task.id).map(({ task_id: _taskId, ...comment }) => comment)
+  }));
+}
+
+function validateAssignees(db: AppDatabase, ids: string[]) {
+  const unique = [...new Set(ids)];
+  if (!unique.length) return null;
+  const valid = db.prepare(`SELECT count(*) AS count FROM users WHERE id IN (${unique.map(() => '?').join(',')})`).get(...unique) as { count: number };
+  return valid.count === unique.length ? unique : null;
+}
+
+function listMessages(db: AppDatabase, currentUserId: string) {
+  const messages = db.prepare(`SELECT m.id,m.body,m.created_at,m.updated_at,m.is_pinned,u.id AS user_id,u.display_name,u.color
+    FROM messages m JOIN users u ON u.id=m.user_id ORDER BY m.is_pinned DESC,m.created_at DESC LIMIT 100`).all() as Array<Record<string, unknown> & { id: string; is_pinned: number }>;
+  const reactions = db.prepare(`SELECT r.message_id,r.emoji,r.user_id,u.display_name
+    FROM message_reactions r JOIN users u ON u.id=r.user_id`).all() as Array<{ message_id: string; emoji: string; user_id: string; display_name: string }>;
+  const reads = db.prepare(`SELECT r.message_id,r.user_id,u.display_name
+    FROM message_reads r JOIN users u ON u.id=r.user_id`).all() as Array<{ message_id: string; user_id: string; display_name: string }>;
+  return messages.map(({ is_pinned, ...message }) => ({
+    ...message,
+    isPinned: Boolean(is_pinned),
+    isOwn: message.user_id === currentUserId,
+    reactions: Object.values(reactions.filter((reaction) => reaction.message_id === message.id).reduce<Record<string, { emoji: string; count: number; reactedByMe: boolean; users: string[] }>>((groups, reaction) => {
+      const group = groups[reaction.emoji] ??= { emoji: reaction.emoji, count: 0, reactedByMe: false, users: [] };
+      group.count += 1; group.users.push(reaction.display_name); if (reaction.user_id === currentUserId) group.reactedByMe = true;
+      return groups;
+    }, {})),
+    readBy: reads.filter((read) => read.message_id === message.id && read.user_id !== message.user_id).map((read) => read.display_name)
   }));
 }
 
@@ -214,19 +249,65 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     const user = requireUser(db, request, reply); if (!user) return;
     const parsed = taskInput.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid task.', fields: parsed.error.flatten() });
-    const uniqueAssignees = [...new Set(parsed.data.assigneeIds)];
-    const valid = db.prepare(`SELECT count(*) AS count FROM users WHERE id IN (${uniqueAssignees.map(() => '?').join(',')})`).get(...uniqueAssignees) as { count: number };
-    if (valid.count !== uniqueAssignees.length) return reply.code(400).send({ error: 'Unknown assignee.' });
+    const uniqueAssignees = validateAssignees(db, parsed.data.assigneeIds);
+    if (!uniqueAssignees) return reply.code(400).send({ error: 'Unknown assignee.' });
     const id = randomUUID(); const now = timestamp();
     db.transaction(() => {
-      db.prepare('INSERT INTO tasks(id,title,description,status,priority,location,blueprint_string,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
-        .run(id, parsed.data.title, parsed.data.description, parsed.data.status, parsed.data.priority, parsed.data.location ?? null, parsed.data.blueprintString ?? null, user.id, now, now);
+      db.prepare('INSERT INTO tasks(id,title,description,status,priority,location,blueprint_string,due_at,is_pinned,is_archived,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(id, parsed.data.title, parsed.data.description, parsed.data.status, parsed.data.priority, parsed.data.location ?? null, parsed.data.blueprintString ?? null, parsed.data.dueAt ?? null, parsed.data.isPinned ? 1 : 0, parsed.data.isArchived ? 1 : 0, user.id, now, now);
       const assign = db.prepare('INSERT INTO task_assignees(task_id,user_id) VALUES(?,?)'); uniqueAssignees.forEach((assignee) => assign.run(id, assignee));
       const tag = db.prepare('INSERT INTO task_tags(task_id,tag) VALUES(?,?)'); [...new Set(parsed.data.tags.map((value) => value.toLowerCase()))].forEach((value) => tag.run(id, value));
       db.prepare('INSERT INTO task_history(id,task_id,user_id,action,detail_json,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(), id, user.id, 'created', '{}', now);
     })();
     recordActivity(db, 'task.created', user.id, { taskId: id, title: parsed.data.title });
     return reply.code(201).send({ id });
+  });
+
+  app.patch('/api/tasks/:id', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
+    const body = taskUpdateInput.safeParse(request.body);
+    if (!params.success || !body.success || Object.keys(body.data).length === 0) return reply.code(400).send({ error: 'Invalid task update.' });
+    const current = db.prepare('SELECT * FROM tasks WHERE id=?').get(params.data.id) as { id: string; title: string; description: string; status: string; priority: number; location: string | null; blueprint_string: string | null; due_at: string | null; is_pinned: number; is_archived: number } | undefined;
+    if (!current) return reply.code(404).send({ error: 'Task not found.' });
+    const assignees = body.data.assigneeIds ? validateAssignees(db, body.data.assigneeIds) : undefined;
+    if (body.data.assigneeIds && !assignees) return reply.code(400).send({ error: 'Unknown assignee.' });
+    const now = timestamp();
+    const next = {
+      title: body.data.title ?? String(current.title), description: body.data.description ?? String(current.description),
+      status: body.data.status ?? String(current.status), priority: body.data.priority ?? Number(current.priority),
+      location: body.data.location === undefined ? current.location : body.data.location,
+      blueprintString: body.data.blueprintString === undefined ? current.blueprint_string : body.data.blueprintString,
+      dueAt: body.data.dueAt === undefined ? current.due_at : body.data.dueAt,
+      isPinned: body.data.isPinned ?? Boolean(current.is_pinned), isArchived: body.data.isArchived ?? Boolean(current.is_archived)
+    };
+    db.transaction(() => {
+      db.prepare(`UPDATE tasks SET title=?,description=?,status=?,priority=?,location=?,blueprint_string=?,due_at=?,is_pinned=?,is_archived=?,updated_at=? WHERE id=?`)
+        .run(next.title, next.description, next.status, next.priority, next.location, next.blueprintString, next.dueAt, next.isPinned ? 1 : 0, next.isArchived ? 1 : 0, now, params.data.id);
+      if (assignees) {
+        db.prepare('DELETE FROM task_assignees WHERE task_id=?').run(params.data.id);
+        const assign = db.prepare('INSERT INTO task_assignees(task_id,user_id) VALUES(?,?)'); assignees.forEach((assignee) => assign.run(params.data.id, assignee));
+      }
+      if (body.data.tags) {
+        db.prepare('DELETE FROM task_tags WHERE task_id=?').run(params.data.id);
+        const tag = db.prepare('INSERT INTO task_tags(task_id,tag) VALUES(?,?)'); [...new Set(body.data.tags.map((value) => value.toLowerCase()))].forEach((value) => tag.run(params.data.id, value));
+      }
+      db.prepare('INSERT INTO task_history(id,task_id,user_id,action,detail_json,created_at) VALUES(?,?,?,?,?,?)')
+        .run(randomUUID(), params.data.id, user.id, 'task.updated', JSON.stringify(body.data), now);
+    })();
+    recordActivity(db, 'task.updated', user.id, { taskId: params.data.id, title: next.title });
+    return { ok: true };
+  });
+
+  app.delete('/api/tasks/:id', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Invalid task id.' });
+    const task = db.prepare('SELECT title FROM tasks WHERE id=?').get(params.data.id) as { title: string } | undefined;
+    if (!task) return reply.code(404).send({ error: 'Task not found.' });
+    db.prepare('DELETE FROM tasks WHERE id=?').run(params.data.id);
+    recordActivity(db, 'task.deleted', user.id, { taskId: params.data.id, title: task.title });
+    return reply.code(204).send();
   });
 
   app.patch('/api/tasks/:id/status', async (request, reply) => {
@@ -302,9 +383,8 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
   });
 
   app.get('/api/messages', async (request, reply) => {
-    if (!requireUser(db, request, reply)) return;
-    return db.prepare(`SELECT m.id,m.body,m.created_at,u.id AS user_id,u.display_name,u.color
-      FROM messages m JOIN users u ON u.id=m.user_id ORDER BY m.created_at DESC LIMIT 100`).all();
+    const user = requireUser(db, request, reply); if (!user) return;
+    return listMessages(db, user.id);
   });
 
   app.post('/api/messages', async (request, reply) => {
@@ -313,9 +393,58 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     if (!body.success) return reply.code(400).send({ error: 'Invalid message.' });
     const id = randomUUID();
     const createdAt = timestamp();
-    db.prepare('INSERT INTO messages(id,user_id,body,created_at) VALUES(?,?,?,?)').run(id, user.id, body.data.body, createdAt);
+    db.prepare('INSERT INTO messages(id,user_id,body,created_at,updated_at,is_pinned) VALUES(?,?,?,?,?,0)').run(id, user.id, body.data.body, createdAt, createdAt);
     recordActivity(db, 'message.created', user.id, { messageId: id });
     return reply.code(201).send({ id, createdAt });
+  });
+
+  app.patch('/api/messages/:id', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
+    const body = z.object({ body: z.string().trim().min(1).max(2_000).optional(), isPinned: z.boolean().optional() }).refine((value) => value.body !== undefined || value.isPinned !== undefined).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'Invalid message update.' });
+    const message = db.prepare('SELECT user_id FROM messages WHERE id=?').get(params.data.id) as { user_id: string } | undefined;
+    if (!message) return reply.code(404).send({ error: 'Message not found.' });
+    if (body.data.body !== undefined && message.user_id !== user.id) return reply.code(403).send({ error: 'Only the author can edit this message.' });
+    const updates: string[] = []; const values: unknown[] = [];
+    if (body.data.body !== undefined) { updates.push('body=?', 'updated_at=?'); values.push(body.data.body, timestamp()); }
+    if (body.data.isPinned !== undefined) { updates.push('is_pinned=?'); values.push(body.data.isPinned ? 1 : 0); }
+    db.prepare(`UPDATE messages SET ${updates.join(',')} WHERE id=?`).run(...values, params.data.id);
+    recordActivity(db, body.data.isPinned !== undefined ? 'message.pinned' : 'message.updated', user.id, { messageId: params.data.id });
+    return { ok: true };
+  });
+
+  app.delete('/api/messages/:id', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Invalid message id.' });
+    const message = db.prepare('SELECT user_id FROM messages WHERE id=?').get(params.data.id) as { user_id: string } | undefined;
+    if (!message) return reply.code(404).send({ error: 'Message not found.' });
+    if (message.user_id !== user.id) return reply.code(403).send({ error: 'Only the author can delete this message.' });
+    db.prepare('DELETE FROM messages WHERE id=?').run(params.data.id);
+    recordActivity(db, 'message.deleted', user.id, { messageId: params.data.id });
+    return reply.code(204).send();
+  });
+
+  app.post('/api/messages/:id/reactions', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
+    const body = z.object({ emoji: z.enum(['👍', '❤️', '😂', '🔥', '⚙️']) }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'Invalid reaction.' });
+    if (!db.prepare('SELECT 1 FROM messages WHERE id=?').get(params.data.id)) return reply.code(404).send({ error: 'Message not found.' });
+    const existing = db.prepare('SELECT 1 FROM message_reactions WHERE message_id=? AND user_id=? AND emoji=?').get(params.data.id, user.id, body.data.emoji);
+    if (existing) db.prepare('DELETE FROM message_reactions WHERE message_id=? AND user_id=? AND emoji=?').run(params.data.id, user.id, body.data.emoji);
+    else db.prepare('INSERT INTO message_reactions(message_id,user_id,emoji,created_at) VALUES(?,?,?,?)').run(params.data.id, user.id, body.data.emoji, timestamp());
+    return { active: !existing };
+  });
+
+  app.post('/api/messages/read', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const body = z.object({ messageIds: z.array(z.string().uuid()).max(100) }).safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: 'Invalid read receipt.' });
+    const mark = db.prepare('INSERT INTO message_reads(message_id,user_id,read_at) SELECT id,?,? FROM messages WHERE id=? ON CONFLICT(message_id,user_id) DO UPDATE SET read_at=excluded.read_at');
+    const now = timestamp(); db.transaction(() => body.data.messageIds.forEach((id) => mark.run(user.id, now, id)))();
+    return { ok: true };
   });
 
   app.get('/api/profiles', async (request, reply) => {
@@ -336,30 +465,65 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     return rows.map((row) => ({ ...row, payload: JSON.parse(row.payload_json) }));
   });
 
+  app.get('/api/reports/shift', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    const query = z.object({ hours: z.coerce.number().int().refine((value) => [4, 8, 12, 24].includes(value)).default(8) }).safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: 'Invalid shift length.' });
+    const since = new Date(Date.now() - query.data.hours * 3_600_000).toISOString();
+    const rows = db.prepare("SELECT collected_at,payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version=2 AND collected_at>=? ORDER BY collected_at").all(since) as Array<{ collected_at: string; payload: Buffer }>;
+    const snapshots = rows.flatMap((row) => {
+      try {
+        const snapshot = JSON.parse(gunzipSync(row.payload).toString('utf8')) as FactorySnapshot;
+        return [{ collectedAt: row.collected_at, sharedFactory: snapshot.sharedFactory }];
+      } catch { return []; }
+    });
+    const production = config.FACTORY_MODE === 'mock'
+      ? summarizeProduction([{ collectedAt: timestamp(), sharedFactory: (await adapter.getSnapshot()).sharedFactory }])
+      : summarizeProduction(snapshots);
+    const snapshot = poller.latest();
+    const completedTasks = db.prepare("SELECT count(*) AS count FROM tasks WHERE status='Done' AND updated_at>=?").get(since) as { count: number };
+    const createdTasks = db.prepare('SELECT count(*) AS count FROM tasks WHERE created_at>=?').get(since) as { count: number };
+    const messageCount = db.prepare('SELECT count(*) AS count FROM messages WHERE created_at>=?').get(since) as { count: number };
+    const events = db.prepare(`SELECT e.event_type,e.payload_json,e.occurred_at,u.display_name AS actor_name
+      FROM activity_events e LEFT JOIN users u ON u.id=e.actor_user_id WHERE e.occurred_at>=? ORDER BY e.occurred_at DESC LIMIT 12`).all(since) as Array<{ event_type: string; payload_json: string; occurred_at: string; actor_name: string | null }>;
+    return {
+      generatedAt: timestamp(), since, hours: query.data.hours,
+      server: snapshot.server,
+      players: snapshot.players.map((player) => ({ factorioName: player.factorioName, online: player.online, playtimeSeconds: player.playtimeSeconds })),
+      production: { topProduced: production.topProduced.slice(0, 5), topConsumed: production.topConsumed.slice(0, 5), sampleCount: production.sampleCount, basis: production.basis },
+      collaboration: { completedTasks: completedTasks.count, createdTasks: createdTasks.count, messages: messageCount.count },
+      events: events.map((event) => ({ ...event, payload: JSON.parse(event.payload_json), payload_json: undefined }))
+    };
+  });
+
   app.get('/api/production', async (request, reply) => {
     if (!requireUser(db, request, reply)) return;
     const query = z.object({
       range: z.enum(['15m', '1h', '6h', '24h']).default('1h'),
-      item: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/).optional()
+      item: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/).optional(),
+      items: z.string().max(320).optional()
     }).safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: 'Invalid production range.' });
+    const comparisonItems = [...new Set((query.data.items?.split(',') ?? (query.data.item ? [query.data.item] : [])).filter((item) => /^[a-z0-9][a-z0-9_-]*$/.test(item)))].slice(0, 4);
     const minutesByRange = { '15m': 15, '1h': 60, '6h': 360, '24h': 1440 } as const;
     const minutes = minutesByRange[query.data.range];
     if (config.FACTORY_MODE === 'mock') {
       const snapshot = await adapter.getSnapshot();
       const pointCount = query.data.range === '24h' ? 24 : query.data.range === '6h' ? 36 : 30;
       const stepMinutes = minutes / pointCount;
-      const selectedCounter = query.data.item ? snapshot.sharedFactory.find((entry) => entry.item === query.data.item) : undefined;
-      const points = Array.from({ length: pointCount }, (_, index) => {
+      const buildMockPoints = (selectedItem?: string) => Array.from({ length: pointCount }, (_, index) => {
         const wave = 0.83 + Math.sin(index / 3.2) * 0.13 + Math.cos(index / 7) * 0.04;
-        const productionRate = query.data.item ? selectedCounter?.productionRate ?? 0 : 4_900;
-        const consumptionRate = query.data.item ? selectedCounter?.consumptionRate ?? 0 : 4_430;
+        const selectedCounter = selectedItem ? snapshot.sharedFactory.find((entry) => entry.item === selectedItem) : undefined;
+        const productionRate = selectedItem ? selectedCounter?.productionRate ?? 0 : snapshot.sharedFactory.reduce((sum, item) => sum + item.productionRate, 0);
+        const consumptionRate = selectedItem ? selectedCounter?.consumptionRate ?? 0 : snapshot.sharedFactory.reduce((sum, item) => sum + item.consumptionRate, 0);
         return { at: new Date(Date.now() - (pointCount - index - 1) * stepMinutes * 60_000).toISOString(), productionRate: Math.round(productionRate * wave), consumptionRate: Math.round(consumptionRate * wave) };
       });
+      const points = buildMockPoints(comparisonItems.length === 1 ? comparisonItems[0] : undefined);
       const topProduced = [...snapshot.sharedFactory].sort((a, b) => b.productionRate - a.productionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.productionRate, rate: item.productionRate }));
       const topConsumed = [...snapshot.sharedFactory].sort((a, b) => b.consumptionRate - a.consumptionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.consumptionRate, rate: item.consumptionRate }));
       const availableItems = [...snapshot.sharedFactory].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate)).map((item) => item.item);
-      return { range: query.data.range, points, topProduced, topConsumed, availableItems, selectedItem: query.data.item ?? null, sampleCount: pointCount, basis: 'current', lastUpdatedAt: snapshot.generatedAt };
+      const comparison = comparisonItems.map((item) => ({ item, points: buildMockPoints(item) }));
+      return { range: query.data.range, points, comparison, topProduced, topConsumed, availableItems, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null, sampleCount: pointCount, basis: 'current', lastUpdatedAt: snapshot.generatedAt };
     }
     const cutoff = new Date(Date.now() - minutes * 60_000).toISOString();
     const rows = db.prepare("SELECT collected_at,payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version=2 AND collected_at>=? ORDER BY collected_at").all(cutoff) as Array<{ collected_at: string; payload: Buffer }>;
@@ -375,17 +539,23 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     const availableItems = [...(latest?.sharedFactory ?? [])]
       .sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate))
       .map((item) => item.item);
-    const points = query.data.item
-      ? summarizeProduction(snapshots.map((snapshot) => ({ ...snapshot, sharedFactory: snapshot.sharedFactory.filter((item) => item.item === query.data.item) }))).points
+    const points = comparisonItems.length === 1
+      ? summarizeProduction(snapshots.map((snapshot) => ({ ...snapshot, sharedFactory: snapshot.sharedFactory.filter((item) => item.item === comparisonItems[0]) }))).points
       : summary.points;
-    return { range: query.data.range, ...summary, points, availableItems, selectedItem: query.data.item ?? null };
+    const comparison = comparisonItems.map((selectedItem) => ({
+      item: selectedItem,
+      points: summarizeProduction(snapshots.map((snapshot) => ({ ...snapshot, sharedFactory: snapshot.sharedFactory.filter((item) => item.item === selectedItem) }))).points
+    }));
+    return { range: query.data.range, ...summary, points, comparison, availableItems, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null };
   });
 
   app.get('/api/icons/:prototype', async (request, reply) => {
     if (!requireUser(db, request, reply)) return;
     const params = z.object({ prototype: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/) }).safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: 'Invalid prototype name.' });
-    const iconPath = resolve(config.FACTORIO_ICON_DIR, `${params.data.prototype}.png`);
+    const customIconPath = resolve(config.FACTORIO_ICON_DIR, `${params.data.prototype}.png`);
+    const bundledIconPath = resolve(bundledIconDirectory, `${params.data.prototype}.png`);
+    const iconPath = existsSync(customIconPath) ? customIconPath : bundledIconPath;
     // The strict prototype allow-list above keeps this endpoint inside the configured directory.
     if (!existsSync(iconPath)) return reply.code(404).send({ error: 'Icon is not installed.' });
     return reply.header('cache-control', 'private, max-age=604800, immutable').type('image/png').send(await readFile(iconPath));
@@ -393,14 +563,18 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
 
   app.get('/api/prototypes', async (request, reply) => {
     if (!requireUser(db, request, reply)) return;
-    const labelsPath = resolve(config.FACTORIO_ICON_DIR, 'labels.cs.json');
-    try {
-      const labels = JSON.parse(await readFile(labelsPath, 'utf8')) as Record<string, string>;
-      return reply.header('cache-control', 'private, max-age=3600').send({ locale: 'cs', labels });
-    } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { locale: 'cs', labels: {} };
-      throw error;
+    const query = z.object({ locale: z.enum(['cs', 'en']).default('cs') }).safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: 'Invalid locale.' });
+    for (const directory of [config.FACTORIO_ICON_DIR, bundledIconDirectory]) {
+      const labelsPath = resolve(directory, `labels.${query.data.locale}.json`);
+      try {
+        const labels = JSON.parse(await readFile(labelsPath, 'utf8')) as Record<string, string>;
+        return reply.header('cache-control', 'private, max-age=3600').send({ locale: query.data.locale, labels });
+      } catch (error) {
+        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+      }
     }
+    return { locale: query.data.locale, labels: {} };
   });
 
   app.get('/api/downloads/hal-telemetry/info', async (request, reply) => {

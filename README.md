@@ -28,11 +28,11 @@ Použití produkčního override vyžaduje vytvořit neveřejný `.env.productio
 
 Nikdy do aplikace nemontujte Docker socket.
 
-## Factorio ikony a české názvy
+## Factorio ikony a české/anglické názvy
 
-Pro přesné herní ikony a české názvy aplikace očekává assety z vlastní instalace Factorio v persistentním adresáři `/app/data/factorio-icons`; tento obsah není součástí Git repozitáře ani Docker image. Importér čte pouze `graphics/icons` a `locale/cs`, nikoli velké herní textury.
+Docker image obsahuje 1 128 skutečných herních ikon a české i anglické názvy získané z vlastní instalace Factorio. Přepínač **CZ / EN** mění jazyk názvů položek v celé aplikaci. Produkční nasazení proto už nevyžaduje ruční kopírování assetů na HAL1000; persistentní adresář `/app/data/factorio-icons` zůstává podporovaný jako volitelná přednostní aktualizace.
 
-Na Macu lze z vlastní instalace vytvořit malý přenosový balíček:
+Balíček assetů pro budoucí aktualizaci hry lze na Macu vytvořit takto:
 
 ```bash
 ./scripts/package-factorio-assets.sh \
@@ -46,7 +46,7 @@ Po rozbalení balíčku na serveru se assety jednorázově importují do persist
 docker compose run --rm -v /local/path/factorio-assets:/input:ro app npm run icons:import --workspace=@hal/api -- --source=/input
 ```
 
-Rozhraní pak automaticky použije `/api/icons/<prototype>` a české názvy z `/api/prototypes`. Dokud assety nejsou lokálně importovány, zobrazí se neutrální fallback — aplikace nikdy nestahuje herní grafiku z internetu.
+Importér čte pouze `graphics/icons`, `locale/cs` a `locale/en`, nikoli velké herní textury. Rozhraní používá `/api/icons/<prototype>` a `/api/prototypes?locale=cs|en`; pokud konkrétní modovaná položka ikonu nemá, zobrazí bezpečný textový fallback. Aplikace herní grafiku nestahuje z internetu.
 
 ## Read-only Factorio log
 
@@ -60,4 +60,4 @@ Každý Docker build zároveň vytvoří validní Factorio archiv `hal-telemetry
 
 ## Stav implementace
 
-Hotovo: jeden non-root Docker kontejner, healthcheck, persistentní SQLite/asset volume, PWA, sessions/CSRF/login rate-limit, přesný RCON klient, telemetry V2, minutové výrobní grafy s filtrem konkrétního itemu, Factorio ikony a české názvy, activity/log tailer, barevně rozlišené společné úkoly s náhledy checklistů a komentářů, sdílené Vzkazy, profily, stažení aktuálního modu a responzivní světlé i tmavé UI.
+Hotovo: jeden non-root Docker kontejner, healthcheck, persistentní SQLite/asset volume, PWA, sessions/CSRF/login rate-limit, přesný RCON klient, telemetry V2, minutové výrobní grafy a porovnání až čtyř položek, skutečné Factorio ikony s CZ/EN názvy, automatický report směny, activity/log tailer, drag & drop úkoly s editací, termíny, filtry, připnutím a archivem, sdílené vzkazy s reakcemi a potvrzením přečtení, profily, stažení aktuálního modu, mobilní burger menu a responzivní světlé i tmavé UI.
