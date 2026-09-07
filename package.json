@@ -1,0 +1,13 @@
+{
+  "name": "hal-factory-control",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "npm run dev --workspace=@hal/api",
+    "build": "npm run build --workspaces",
+    "check": "npm run check --workspaces",
+    "test": "npm run test --workspaces"
+  },
+  "engines": { "node": ">=22" }
+}

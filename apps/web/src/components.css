@@ -1,0 +1,75 @@
+.item-icon {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  image-rendering: pixelated;
+  flex: 0 0 auto;
+}
+
+.item-icon.fallback {
+  display: inline-grid;
+  place-items: center;
+  background: #2c3535;
+  color: #e69636;
+  border-radius: 4px;
+  font-size: .8rem;
+}
+
+.factory-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .8rem;
+  padding-top: .8rem;
+}
+
+.factory-items > span, .item-name {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+}
+
+.factory-items small { text-transform: capitalize; }
+
+.top-items { margin: 0; padding: 0; list-style: none; }
+.top-items li { display: flex; justify-content: space-between; align-items: center; gap: .5rem; padding: .55rem 0; border-top: 1px solid #2a3332; }
+.top-items li:first-child { border-top: 0; }
+.range-picker { display: flex; gap: .35rem; }
+.range-picker button { padding: .48rem .66rem; }
+
+@media (max-width: 560px) {
+  .range-picker button { padding: .4rem .5rem; }
+}
+
+.task-detail-backdrop {
+  position: fixed;
+  z-index: 10;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: #060909bb;
+}
+
+.task-detail {
+  width: min(100%, 680px);
+  max-height: min(88vh, 760px);
+  overflow: auto;
+  padding: 1.4rem;
+  border: 1px solid #4a5754;
+  border-radius: 10px;
+  background: #171c1d;
+}
+
+.task-detail h2 { margin: .2rem 0 .8rem; }
+.task-detail h3 { margin: 1.4rem 0 .55rem; font-size: .9rem; }
+.detail-close { float: right; background: #303a39; color: #edf1ee; font-size: .76rem; }
+.checklist, .history { list-style: none; padding: 0; margin: 0; }
+.checklist li, .history li { padding: .42rem 0; border-top: 1px solid #2a3332; }
+.checklist li:first-child, .history li:first-child { border-top: 0; }
+.inline-form { display: flex; gap: .5rem; margin-top: .6rem; }
+.inline-form input { min-width: 0; flex: 1; padding: .55rem; border: 1px solid #475250; border-radius: 6px; color: #edf1ee; background: #101414; }
+.comment { padding: .5rem 0; margin: 0; border-top: 1px solid #2a3332; }
+
+@media (max-width: 560px) {
+  .inline-form { flex-direction: column; }
+}

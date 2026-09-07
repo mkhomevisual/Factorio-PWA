@@ -1,0 +1,31 @@
+export type ServerState = {
+  online: boolean;
+  version: string | null;
+  gameState: 'running' | 'paused' | 'unknown';
+  uptimeSeconds: number | null;
+  lastSaveAt: string | null;
+};
+
+export type PlayerState = {
+  factorioName: string;
+  online: boolean;
+  lastOnlineAt: string | null;
+  playtimeSeconds: number;
+  personalActivity: { handCrafted: number; mined: number; built: number; deaths: number };
+};
+
+export type ProductionCounter = { item: string; produced: number; consumed: number };
+export type FactorySnapshot = {
+  contractVersion: 1;
+  generatedAt: string;
+  server: ServerState;
+  players: PlayerState[];
+  sharedFactory: ProductionCounter[];
+  events: Array<{ id: string; type: string; occurredAt: string; message: string }>;
+};
+
+export interface FactoryAdapter {
+  getSnapshot(): Promise<FactorySnapshot>;
+  save(): Promise<void>;
+  sendMessage(message: string): Promise<void>;
+}

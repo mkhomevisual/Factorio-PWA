@@ -1,0 +1,28 @@
+# Copy this file to compose.production.yaml on Hal1000 after local validation.
+# It is intentionally not enabled by the default mock-mode compose project.
+services:
+  app:
+    env_file: .env.production
+    environment:
+      FACTORY_MODE: factorio-rcon
+      SESSION_COOKIE_SECURE: "true"
+      FACTORIO_RCON_HOST: server
+      FACTORIO_RCON_PORT: "27015"
+      RCON_PASSWORD_FILE: /run/secrets/factorio_rcon_password
+    secrets:
+      - factorio_rcon_password
+    volumes:
+      - /srv/factorio/data/factorio-current.log:/factorio/factorio-current.log:ro
+    networks:
+      - factorio_default
+      - nginx-network
+
+secrets:
+  factorio_rcon_password:
+    file: /srv/factorio/data/config/rconpw
+
+networks:
+  factorio_default:
+    external: true
+  nginx-network:
+    external: true

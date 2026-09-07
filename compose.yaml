@@ -1,0 +1,15 @@
+services:
+  app:
+    build:
+      context: .
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      DATABASE_PATH: /app/data/hal-factory-control.db
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    volumes:
+      - hal_factory_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  hal_factory_data:
