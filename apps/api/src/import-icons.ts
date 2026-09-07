@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { basename, extname, join, resolve } from 'node:path';
 import { config } from './config.js';
 
@@ -24,7 +24,9 @@ async function visit(directory: string): Promise<void> {
       // Prototype names are the Factorio filenames for base item icons. Ignore
       // decorations and unusual files rather than exposing arbitrary paths.
       if (/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
-        await cp(path, join(destination, `${name}.png`), { force: true });
+        const target = join(destination, `${name}.png`);
+        await cp(path, target, { force: true });
+        await chmod(target, 0o644);
         importedIcons.add(name);
         copied += 1;
       }
