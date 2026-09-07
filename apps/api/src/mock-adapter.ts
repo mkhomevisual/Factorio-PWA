@@ -1,4 +1,5 @@
 import type { FactoryAdapter, FactorySnapshot } from './factory-adapter.js';
+import type { SafeRconQuery } from './factory-adapter.js';
 
 const startedAt = Date.now();
 const baseCounters = [
@@ -34,4 +35,15 @@ export class MockFactoryAdapter implements FactoryAdapter {
   }
   async save() { return; }
   async sendMessage(_message: string) { return; }
+  async query(command: SafeRconQuery) {
+    const output: Record<SafeRconQuery, string> = {
+      players: 'Online players (1): MarkanMegaBuilder',
+      time: 'Map age: 57 hours 12 minutes',
+      version: 'Version: 2.0.77 (build 84539, expansion space-age)',
+      evolution: 'Evolution factor on nauvis: 0.42',
+      admins: 'Admins: MarkanMegaBuilder, Hajnej',
+      whitelist: 'Whitelisted players: MarkanMegaBuilder, Hajnej'
+    };
+    return output[command];
+  }
 }

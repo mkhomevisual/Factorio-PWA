@@ -58,6 +58,12 @@ Mod `hal-telemetry` 0.2.1 používá kontrakt V2. Z Factorio 2 čte správnou dv
 
 Každý Docker build zároveň vytvoří validní Factorio archiv `hal-telemetry_<verze>.zip` přímo z adresáře modu. Přihlášený uživatel si přesně tuto verzi stáhne v sekci **Server**, takže soubor není nutné ručně kopírovat přes SSH.
 
+## Výrobní cíle, úspěchy a bezpečné RCON nástroje
+
+Výrobní cíl ukládá počáteční kumulativní čítač položky a dále přičítá pouze kladné rozdíly mezi minutovými telemetry vzorky. Reset herního čítače proto cíl nesplní omylem. Po dokončení aplikace připne automatický vzkaz, zobrazí oslavu v PWA a přes stávající interní RCON spojení pošle oznámení do hry. Neúspěšné herní oznámení se opakuje při dalším vzorku; průběh cíle zůstává bezpečně uložený v SQLite.
+
+Sekce **Úspěchy** obsahuje 44 perzistentních výzev pro oba hráče a společnou továrnu. Vyhodnocují se pouze z již dostupných telemetry a databázových údajů. Serverová obrazovka nabízí šest pevně whitelisted informačních RCON dotazů (`players`, `time`, `version`, `evolution`, `admins`, `whitelist`); klient nikdy neposílá vlastní raw příkaz.
+
 ## Stav implementace
 
-Hotovo: jeden non-root Docker kontejner, healthcheck, persistentní SQLite/asset volume, PWA, sessions/CSRF/login rate-limit, přesný RCON klient, telemetry V2, minutové výrobní grafy a porovnání až čtyř položek, skutečné Factorio ikony s CZ/EN názvy, automatický report směny, activity/log tailer, drag & drop úkoly s editací, termíny, filtry, připnutím a archivem, sdílené vzkazy s reakcemi a potvrzením přečtení, profily, stažení aktuálního modu, mobilní burger menu a responzivní světlé i tmavé UI.
+Hotovo: jeden non-root Docker kontejner, healthcheck, persistentní SQLite/asset volume, PWA, sessions/CSRF/login rate-limit, přesný RCON klient, telemetry V2, minutové výrobní grafy a porovnání až čtyř položek, rozbalovací katalog výroby, výrobní cíle s herním oznámením, 44 úspěchů, skutečné Factorio ikony s CZ/EN názvy, automatický report směny, activity/log tailer, drag & drop úkoly s editací, termíny, filtry, připnutím a archivem, sdílené vzkazy s reakcemi a potvrzením přečtení, rozšířené profily, bezpečné informační RCON nástroje, stažení aktuálního modu, mobilní burger menu a responzivní světlé i tmavé UI.

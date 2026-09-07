@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { executeFactorioRconCommand } from './factorio-rcon-client.js';
-import type { FactoryAdapter, FactorySnapshot } from './factory-adapter.js';
+import type { FactoryAdapter, FactorySnapshot, SafeRconQuery } from './factory-adapter.js';
 import type { Config } from './config.js';
 
 const PREFIX = 'HAL_TELEMETRY_V2:';
@@ -44,6 +44,18 @@ export class FactorioRconAdapter implements FactoryAdapter {
   async sendMessage(message: string) {
     const safe = message.replace(/[\r\n]/g, ' ').slice(0, 250);
     await this.command(`[HAL] ${safe}`);
+  }
+
+  async query(query: SafeRconQuery) {
+    const commands: Record<SafeRconQuery, string> = {
+      players: '/players online',
+      time: '/time',
+      version: '/version',
+      evolution: '/evolution',
+      admins: '/admins',
+      whitelist: '/whitelist get'
+    };
+    return this.command(commands[query]);
   }
 }
 

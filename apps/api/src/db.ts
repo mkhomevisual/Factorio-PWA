@@ -127,6 +127,27 @@ export function openDatabase(path: string): AppDatabase {
       payload BLOB NOT NULL
     );
     CREATE INDEX IF NOT EXISTS telemetry_snapshots_scope_time ON telemetry_snapshots(scope_type, scope_key, collected_at DESC);
+    CREATE TABLE IF NOT EXISTS production_goals (
+      id TEXT PRIMARY KEY,
+      item TEXT NOT NULL,
+      target_amount REAL NOT NULL CHECK(target_amount > 0),
+      progress_amount REAL NOT NULL DEFAULT 0,
+      last_counter REAL NOT NULL DEFAULT 0,
+      linked_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      created_by TEXT NOT NULL REFERENCES users(id),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'completed')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT,
+      announced_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS production_goals_status ON production_goals(status, created_at DESC);
+    CREATE TABLE IF NOT EXISTS achievement_unlocks (
+      achievement_key TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      unlocked_at TEXT NOT NULL,
+      PRIMARY KEY(achievement_key, scope_key)
+    );
   `);
 
   // Additive migrations keep the existing production volume and all user data.

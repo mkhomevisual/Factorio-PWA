@@ -27,6 +27,8 @@ test('adds workspace columns and collaboration tables to an existing database', 
   assert.ok(messageColumns.includes('is_pinned'));
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_reactions'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_reads'").get());
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='production_goals'").get());
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='achievement_unlocks'").get());
   db.close();
   rmSync(directory, { recursive: true, force: true });
 });

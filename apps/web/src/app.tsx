@@ -4,7 +4,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 
 type Theme = 'light' | 'dark';
 type Locale = 'cs' | 'en';
-type View = 'Dashboard' | 'Tasks' | 'Messages' | 'Production' | 'Report' | 'Activity' | 'Profiles' | 'Server';
+type View = 'Dashboard' | 'Tasks' | 'Messages' | 'Production' | 'Goals' | 'Achievements' | 'Report' | 'Activity' | 'Profiles' | 'Server';
 type User = { id: string; displayName: string; factorioName: string; color: string };
 type FactoryItem = { item: string; produced: number; consumed: number; productionRate: number; consumptionRate: number };
 type Dashboard = {
@@ -18,7 +18,12 @@ type Dashboard = {
   };
   tasks: Array<{ id: string; title: string; status: string; priority: number; location: string | null }>;
 };
-type Profile = { id: string; displayName: string; factorioName: string; color: string; online: boolean; lastOnlineAt: string | null; playtimeSeconds: number; completedTasks: number; personalActivity: { handCrafted: number; mined: number; built: number; deaths: number } };
+type Profile = {
+  id: string; displayName: string; factorioName: string; color: string; online: boolean; lastOnlineAt: string | null; playtimeSeconds: number; completedTasks: number;
+  personalActivity: { handCrafted: number; mined: number; built: number; deaths: number };
+  rates: { builtPerHour: number; minedPerHour: number; craftedPerHour: number };
+  collaboration: { openTasks: number; createdTasks: number; messages: number; comments: number; reactions: number; completedGoals: number; achievements: number };
+};
 type TaskStatus = 'Now' | 'Next' | 'Later' | 'Done';
 type TaskChecklistItem = { id: string; text: string; isDone: boolean };
 type TaskComment = { id: string; body: string; created_at: string; display_name: string; color: string };
@@ -29,8 +34,10 @@ type MessageReaction = { emoji: string; count: number; reactedByMe: boolean; use
 type SharedMessage = { id: string; body: string; created_at: string; updated_at: string | null; user_id: string; display_name: string; color: string; isPinned: boolean; isOwn: boolean; reactions: MessageReaction[]; readBy: string[] };
 type ProductionItem = { item: string; amount: number; rate: number };
 type ProductionPoint = { at: string; productionRate: number; consumptionRate: number };
-type Production = { range: string; points: ProductionPoint[]; comparison: Array<{ item: string; points: ProductionPoint[] }>; topProduced: ProductionItem[]; topConsumed: ProductionItem[]; availableItems: string[]; selectedItems: string[]; sampleCount: number; basis: 'empty' | 'current' | 'interval'; lastUpdatedAt: string | null };
+type Production = { range: string; points: ProductionPoint[]; comparison: Array<{ item: string; points: ProductionPoint[] }>; topProduced: ProductionItem[]; topConsumed: ProductionItem[]; availableItems: string[]; catalog: FactoryItem[]; selectedItems: string[]; sampleCount: number; basis: 'empty' | 'current' | 'interval'; lastUpdatedAt: string | null };
 type ShiftReport = { generatedAt: string; since: string; hours: number; server: Dashboard['snapshot']['server']; players: Array<{ factorioName: string; online: boolean; playtimeSeconds: number }>; production: { topProduced: ProductionItem[]; topConsumed: ProductionItem[]; sampleCount: number; basis: Production['basis'] }; collaboration: { completedTasks: number; createdTasks: number; messages: number }; events: Array<{ event_type: string; occurred_at: string; actor_name: string | null; payload: { message?: string; title?: string } }> };
+type ProductionGoal = { id: string; item: string; targetAmount: number; progressAmount: number; progress: number; productionRate: number; etaSeconds: number | null; status: 'active' | 'completed'; createdAt: string; completedAt: string | null; announcedInGame: boolean; linkedTaskId: string | null; linkedTaskTitle: string | null; createdByName: string };
+type Achievement = { key: string; audience: 'player' | 'factory'; category: string; title: string; description: string; icon: string; target: number; scopeKey: string; scopeName: string; value: number; progress: number; unlockedAt: string | null };
 
 let csrfToken = '';
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -51,6 +58,7 @@ const statusLabels: Record<TaskStatus, string> = { Now: 'Priorita', Next: 'Non-P
 const presetTaskTags = ['server', 'výroba', 'logistika', 'obrana', 'nápad'];
 const compactNumber = new Intl.NumberFormat('cs-CZ', { notation: 'compact', maximumFractionDigits: 1 });
 const preciseNumber = new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 1 });
+const wholeNumber = new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 0 });
 const duration = (seconds: number | null) => seconds === null ? '—' : seconds < 3600 ? `${Math.floor(seconds / 60)} min` : `${Math.floor(seconds / 3600)} h ${Math.floor(seconds / 60) % 60} min`;
 const timeAgo = (value: string | null) => {
   if (!value) return 'zatím neznámé';
@@ -75,6 +83,8 @@ function Glyph({ name }: { name: GlyphName }) {
     Tasks: <><path d="M9 6h11M9 12h11M9 18h11"/><path d="m3 6 1.5 1.5L7 4.5M3 12l1.5 1.5L7 10.5M3 18l1.5 1.5L7 16.5"/></>,
     Messages: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 9h8M8 13h5"/></>,
     Production: <><path d="M4 19V9l5 3V7l5 3V4h6v15z"/><path d="M7 19v-3h3v3M14 19v-4h3v4"/></>,
+    Goals: <><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/><path d="m19 5 2-2M17 7l4-4"/></>,
+    Achievements: <><path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H4v2a4 4 0 0 0 4 4M16 6h4v2a4 4 0 0 1-4 4M12 13v4M8 21h8M9 17h6"/></>,
     Activity: <><path d="M3 12h4l2-6 4 12 2-6h6"/></>,
     Profiles: <><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20c0-4 2.5-6 6-6s6 2 6 6M14 15c3.8-.8 7 1 7 5"/></>,
     Server: <><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01M11 7h7M11 17h7"/></>,
@@ -144,7 +154,7 @@ function Login({ onLogin, theme, setTheme }: { onLogin: (user: User) => void; th
 
 const navigation: Array<{ id: View; label: string }> = [
   { id: 'Dashboard', label: 'Přehled' }, { id: 'Tasks', label: 'Úkoly' }, { id: 'Messages', label: 'Vzkazy' }, { id: 'Production', label: 'Výroba' },
-  { id: 'Report', label: 'Report směny' }, { id: 'Activity', label: 'Události' }, { id: 'Profiles', label: 'Hráči' }, { id: 'Server', label: 'Server' }
+  { id: 'Goals', label: 'Výrobní cíle' }, { id: 'Achievements', label: 'Úspěchy' }, { id: 'Report', label: 'Report směny' }, { id: 'Activity', label: 'Události' }, { id: 'Profiles', label: 'Hráči' }, { id: 'Server', label: 'Server' }
 ];
 
 function Navigation({ active, setActive, onNavigate }: { active: View; setActive: (view: View) => void; onNavigate?: () => void }) {
@@ -306,11 +316,91 @@ function MessagesView() {
   </section>;
 }
 
+function GoalsView() {
+  const { labels, locale } = useContext(labelsContext);
+  const [goals, setGoals] = useState<ProductionGoal[]>([]); const [production, setProduction] = useState<Production | null>(null); const [tasks, setTasks] = useState<Task[]>([]);
+  const [item, setItem] = useState(''); const [amount, setAmount] = useState('10000'); const [taskId, setTaskId] = useState(''); const [search, setSearch] = useState('');
+  const [showPicker, setShowPicker] = useState(false); const [showCompleted, setShowCompleted] = useState(true); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  const load = () => Promise.all([api<ProductionGoal[]>('/api/goals'), api<Production>('/api/production?range=1h'), api<Task[]>('/api/tasks')]).then(([goalRows, productionData, taskRows]) => { setGoals(goalRows); setProduction(productionData); setTasks(taskRows.filter((task) => !task.isArchived)); setError(''); });
+  useEffect(() => { let active = true; const refresh = () => load().catch((reason) => active && setError(reason.message)); void refresh(); const timer = window.setInterval(() => void refresh(), 30_000); return () => { active = false; window.clearInterval(timer); }; }, []);
+  const choices = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase(locale);
+    return (production?.catalog ?? []).filter((entry) => !needle || entry.item.includes(needle) || labelFor(labels, entry.item).toLocaleLowerCase(locale).includes(needle)).slice(0, 80);
+  }, [production, labels, locale, search]);
+  async function create(event: React.FormEvent) {
+    event.preventDefault(); setError(''); setBusy(true);
+    try { await api('/api/goals', { method: 'POST', body: JSON.stringify({ item, targetAmount: Number(amount), linkedTaskId: taskId || null }) }); setItem(''); setAmount('10000'); setTaskId(''); setShowPicker(false); await load(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Výrobní cíl se nepodařilo vytvořit.'); }
+    finally { setBusy(false); }
+  }
+  async function remove(goal: ProductionGoal) { if (!window.confirm(`Smazat cíl ${labelFor(labels, goal.item)}?`)) return; try { await api(`/api/goals/${goal.id}`, { method: 'DELETE' }); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Cíl se nepodařilo smazat.'); } }
+  const visible = goals.filter((goal) => showCompleted || goal.status === 'active');
+  const activeCount = goals.filter((goal) => goal.status === 'active').length;
+  const completedCount = goals.length - activeCount;
+  return <section className="content goals-view">
+    <PageHeader eyebrow="VÝROBNÍ PLÁN" title="Výrobní cíle" description="Sledujte přírůstek výroby od založení cíle. Splnění se připíše do Vzkazů a ohlásí přímo ve hře." />
+    {error && <p className="error banner" role="alert">{error}</p>}
+    <div className="goal-summary"><Metric label="Aktivní cíle" value={String(activeCount)} note="právě se sledují" tone="production" /><Metric label="Splněno" value={String(completedCount)} note="historicky" /><Metric label="Sledované tempo" value={`${compactNumber.format(goals.filter((goal) => goal.status === 'active').reduce((sum, goal) => sum + goal.productionRate, 0))} / min`} note="součet aktivních položek" /></div>
+    <Panel title="Nový výrobní cíl" subtitle="Počítá se pouze nová výroba od okamžiku založení.">
+      <form className="goal-form" onSubmit={create}>
+        <label><span>Položka</span><button className="item-picker-button" type="button" onClick={() => setShowPicker((value) => !value)}>{item ? <><ItemIcon prototype={item} /><span><strong>{labelFor(labels, item)}</strong><small>{item}</small></span></> : <span><strong>Vybrat položku</strong><small>Otevřít katalog výroby</small></span>}<Glyph name={showPicker ? 'close' : 'Production'} /></button></label>
+        <label><span>Počet kusů</span><input type="number" min="1" max="1000000000000" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} required /></label>
+        <label><span>Propojený úkol · volitelné</span><select value={taskId} onChange={(event) => setTaskId(event.target.value)}><option value="">Bez propojení</option>{tasks.map((task) => <option value={task.id} key={task.id}>{task.title}</option>)}</select></label>
+        <button className="primary" disabled={busy || !item}>{busy ? 'Zakládám…' : 'Spustit cíl'}</button>
+      </form>
+      {showPicker && <div className="goal-item-picker"><input type="search" placeholder="Hledat český nebo anglický název…" value={search} onChange={(event) => setSearch(event.target.value)} autoFocus /><div className="catalog-grid compact">{choices.map((entry) => <button type="button" className={item === entry.item ? 'selected' : ''} onClick={() => { setItem(entry.item); setShowPicker(false); }} key={entry.item}><ItemIcon prototype={entry.item} /><span><strong>{labelFor(labels, entry.item)}</strong><small>{preciseNumber.format(entry.productionRate)} / min</small></span></button>)}</div></div>}
+    </Panel>
+    <div className="goal-list-toolbar"><div><h2>Průběh cílů</h2><p>Aktualizace probíhá s každým minutovým telemetry vzorkem.</p></div><label><input type="checkbox" checked={showCompleted} onChange={(event) => setShowCompleted(event.target.checked)} /> Zobrazit splněné</label></div>
+    <div className="goal-grid">{visible.map((goal) => <article className={`goal-card ${goal.status}`} key={goal.id}><header><ItemIcon prototype={goal.item} size="large" /><div><span>{goal.status === 'completed' ? 'SPLNĚNO' : 'AKTIVNÍ CÍL'}</span><h2>{labelFor(labels, goal.item)}</h2><small>{goal.item}</small></div><button className="icon-button danger-button" onClick={() => void remove(goal)} aria-label="Smazat cíl"><Glyph name="trash" /></button></header><div className="goal-progress-copy"><strong>{wholeNumber.format(goal.progressAmount)} <small>/ {wholeNumber.format(goal.targetAmount)}</small></strong><span>{wholeNumber.format(goal.progress * 100)} %</span></div><div className="goal-track"><i style={{ width: `${goal.progress * 100}%` }} /></div><div className="goal-details"><div><small>Aktuální tempo</small><strong>{preciseNumber.format(goal.productionRate)} / min</strong></div><div><small>Odhad dokončení</small><strong>{goal.status === 'completed' ? timeAgo(goal.completedAt) : goal.etaSeconds ? duration(goal.etaSeconds) : 'čeká na výrobu'}</strong></div></div><footer><span>Založil {goal.createdByName}</span>{goal.linkedTaskTitle && <span>Úkol: {goal.linkedTaskTitle}</span>}{goal.status === 'completed' && <span className={goal.announcedInGame ? 'announced' : ''}>{goal.announcedInGame ? 'Ohlášeno ve hře' : 'Čeká na RCON'}</span>}</footer></article>)}{!visible.length && <div className="goal-empty"><span>🎯</span><h2>První cíl čeká</h2><p>Vyberte vyráběnou položku a množství, kterého chcete společně dosáhnout.</p></div>}</div>
+  </section>;
+}
+
+function playGoalFanfare() {
+  try {
+    const audio = new AudioContext();
+    [523.25, 659.25, 783.99, 1046.5].forEach((frequency, index) => {
+      const oscillator = audio.createOscillator(); const gain = audio.createGain(); const start = audio.currentTime + index * 0.13;
+      oscillator.type = 'triangle'; oscillator.frequency.value = frequency; gain.gain.setValueAtTime(0.0001, start); gain.gain.exponentialRampToValueAtTime(0.12, start + 0.025); gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.28);
+      oscillator.connect(gain); gain.connect(audio.destination); oscillator.start(start); oscillator.stop(start + 0.3);
+    });
+    window.setTimeout(() => void audio.close(), 1_200);
+  } catch { /* Visual celebration remains available when autoplay is blocked. */ }
+}
+
+function GoalCelebrationLayer() {
+  const { labels } = useContext(labelsContext); const [goal, setGoal] = useState<ProductionGoal | null>(null);
+  useEffect(() => {
+    let active = true;
+    const check = async () => {
+      try {
+        const goals = await api<ProductionGoal[]>('/api/goals');
+        const seen = new Set(JSON.parse(window.localStorage.getItem('hal-celebrated-goals') ?? '[]') as string[]);
+        const recent = goals.find((entry) => entry.status === 'completed' && entry.completedAt && Date.now() - new Date(entry.completedAt).getTime() < 10 * 60_000 && !seen.has(entry.id));
+        if (!active || !recent) return;
+        seen.add(recent.id); window.localStorage.setItem('hal-celebrated-goals', JSON.stringify([...seen].slice(-100))); setGoal(recent); playGoalFanfare();
+        window.setTimeout(() => active && setGoal(null), 9_000);
+      } catch { /* Dashboard errors already report connectivity failures. */ }
+    };
+    void check(); const timer = window.setInterval(() => void check(), 30_000); return () => { active = false; window.clearInterval(timer); };
+  }, []);
+  if (!goal) return null;
+  return <div className="goal-celebration" role="status" aria-live="assertive"><div className="confetti" aria-hidden="true">{Array.from({ length: 18 }, (_, index) => <i style={{ '--i': index } as CSSProperties} key={index} />)}</div><button className="icon-button" onClick={() => setGoal(null)} aria-label="Zavřít oslavu"><Glyph name="close" /></button><span className="celebration-trophy">🏆</span><p>VÝROBNÍ CÍL SPLNĚN</p><h2>{wholeNumber.format(goal.targetAmount)}× {labelFor(labels, goal.item)}</h2><span>Zapsáno do Vzkazů · {goal.announcedInGame ? 'ohlášeno ve hře' : 'RCON oznámení čeká na doručení'}</span></div>;
+}
+
+function AchievementsView() {
+  const [entries, setEntries] = useState<Achievement[]>([]); const [definitionCount, setDefinitionCount] = useState(0); const [scope, setScope] = useState('factory'); const [category, setCategory] = useState(''); const [hideLocked, setHideLocked] = useState(false); const [error, setError] = useState('');
+  useEffect(() => { let active = true; const load = () => api<{ definitions: number; achievements: Achievement[] }>('/api/achievements').then((value) => { if (active) { setEntries(value.achievements); setDefinitionCount(value.definitions); setError(''); } }).catch((reason) => active && setError(reason.message)); void load(); const timer = window.setInterval(() => void load(), 60_000); return () => { active = false; window.clearInterval(timer); }; }, []);
+  const scopes = useMemo(() => [...new Map(entries.map((entry) => [entry.scopeKey, entry.scopeName])).entries()], [entries]);
+  const categories = useMemo(() => [...new Set(entries.map((entry) => entry.category))], [entries]);
+  const visible = entries.filter((entry) => entry.scopeKey === scope && (!category || entry.category === category) && (!hideLocked || entry.unlockedAt));
+  const scopeEntries = entries.filter((entry) => entry.scopeKey === scope); const unlocked = scopeEntries.filter((entry) => entry.unlockedAt).length;
+  return <section className="content achievements-view"><PageHeader eyebrow="TOVÁRNÍ TROFEJE" title="Úspěchy" description={`${definitionCount} různých výzev pro hráče i společnou továrnu.`} />{error && <p className="error banner">{error}</p>}<div className="achievement-toolbar"><div className="scope-tabs">{scopes.map(([key, name]) => <button className={scope === key ? 'active' : ''} onClick={() => setScope(key)} key={key}>{name}</button>)}</div><div className="achievement-filters"><select value={category} onChange={(event) => setCategory(event.target.value)}><option value="">Všechny kategorie</option>{categories.map((value) => <option key={value}>{value}</option>)}</select><label><input type="checkbox" checked={hideLocked} onChange={(event) => setHideLocked(event.target.checked)} /> Jen odemčené</label></div></div><div className="achievement-overview"><div><strong>{unlocked}/{scopeEntries.length}</strong><span>odemčeno</span></div><div className="achievement-total-track"><i style={{ width: `${scopeEntries.length ? unlocked / scopeEntries.length * 100 : 0}%` }} /></div></div><div className="achievement-grid">{visible.map((entry) => <article className={`achievement-card ${entry.unlockedAt ? 'unlocked' : 'locked'}`} key={`${entry.key}-${entry.scopeKey}`}><span className="achievement-icon">{entry.icon}</span><div><small>{entry.category}</small><h2>{entry.title}</h2><p>{entry.description}</p><div className="achievement-progress"><i style={{ width: `${entry.progress * 100}%` }} /></div><footer><span>{wholeNumber.format(Math.min(entry.value, entry.target))} / {wholeNumber.format(entry.target)}</span><strong>{entry.unlockedAt ? `Odemčeno ${timeAgo(entry.unlockedAt)}` : `${wholeNumber.format(entry.progress * 100)} %`}</strong></footer></div></article>)}</div></section>;
+}
+
 function ProfilesView() {
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [error, setError] = useState('');
-  useEffect(() => { void api<Profile[]>('/api/profiles').then(setProfiles).catch((reason) => setError(reason.message)); }, []);
-  return <section className="content"><PageHeader eyebrow="OPERÁTOŘI" title="Hráči" description="Herní čas a osobní aktivita obou členů továrny." />{error && <p className="error banner">{error}</p>}<div className="profile-grid">{profiles.map((profile) => <article className="profile-card" key={profile.id}><header><span className="profile-avatar" style={{ '--avatar-color': profile.color } as CSSProperties}>{profile.displayName.slice(0, 1)}</span><div><h2>{profile.displayName}</h2><p>{profile.factorioName}</p></div><span className={`presence ${profile.online ? 'online' : ''}`}>{profile.online ? 'Online' : 'Offline'}</span></header><div className="profile-stats"><Metric label="Herní čas" value={duration(profile.playtimeSeconds)} /><Metric label="Hotové úkoly" value={String(profile.completedTasks)} /><Metric label="Ručně vyrobeno" value={compactNumber.format(profile.personalActivity.handCrafted)} /><Metric label="Postaveno" value={compactNumber.format(profile.personalActivity.built)} /></div></article>)}</div></section>;
+  const [profiles, setProfiles] = useState<Profile[]>([]); const [error, setError] = useState('');
+  useEffect(() => { let active = true; const load = () => api<Profile[]>('/api/profiles').then((value) => active && setProfiles(value)).catch((reason) => active && setError(reason.message)); void load(); const timer = window.setInterval(() => void load(), 60_000); return () => { active = false; window.clearInterval(timer); }; }, []);
+  return <section className="content"><PageHeader eyebrow="OPERÁTOŘI" title="Hráči" description="Všechny dostupné osobní statistiky z telemetry a společné práce ve webu." />{error && <p className="error banner">{error}</p>}<div className="profile-grid expanded">{profiles.map((profile) => <article className="profile-card expanded" key={profile.id}><header><span className="profile-avatar" style={{ '--avatar-color': profile.color } as CSSProperties}>{profile.displayName.slice(0, 1)}</span><div><h2>{profile.displayName}</h2><p>{profile.factorioName} · {profile.online ? 'právě ve hře' : `naposledy ${timeAgo(profile.lastOnlineAt)}`}</p></div><span className={`presence ${profile.online ? 'online' : ''}`}>{profile.online ? 'Online' : 'Offline'}</span></header><section className="profile-section"><h3>Osobní aktivita ve hře</h3><div className="profile-stats"><Metric label="Herní čas" value={duration(profile.playtimeSeconds)} /><Metric label="Ručně vyrobeno" value={wholeNumber.format(profile.personalActivity.handCrafted)} note={`${preciseNumber.format(profile.rates.craftedPerHour)} / h`} /><Metric label="Ručně vytěženo" value={wholeNumber.format(profile.personalActivity.mined)} note={`${preciseNumber.format(profile.rates.minedPerHour)} / h`} /><Metric label="Postaveno" value={wholeNumber.format(profile.personalActivity.built)} note={`${preciseNumber.format(profile.rates.builtPerHour)} / h`} /><Metric label="Úmrtí" value={wholeNumber.format(profile.personalActivity.deaths)} /></div></section><section className="profile-section"><h3>Společná práce</h3><div className="collaboration-stats"><span><strong>{profile.completedTasks}</strong> hotových úkolů</span><span><strong>{profile.collaboration.openTasks}</strong> otevřených úkolů</span><span><strong>{profile.collaboration.createdTasks}</strong> založených úkolů</span><span><strong>{profile.collaboration.messages}</strong> vzkazů</span><span><strong>{profile.collaboration.comments}</strong> komentářů</span><span><strong>{profile.collaboration.reactions}</strong> reakcí</span><span><strong>{profile.collaboration.completedGoals}</strong> splněných cílů</span><span><strong>{profile.collaboration.achievements}</strong> úspěchů</span></div></section></article>)}</div><p className="footnote">Strojovou výrobu nelze poctivě rozdělit mezi hráče, protože oba pracují ve společné force. Zobrazené osobní údaje pocházejí pouze z jednoznačně přiřaditelných herních událostí.</p></section>;
 }
 
 function ActivityView() {
@@ -333,6 +423,9 @@ function ProductionView() {
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [comparisonMetric, setComparisonMetric] = useState<'productionRate' | 'consumptionRate'>('productionRate');
   const [itemSearch, setItemSearch] = useState('');
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [flowFilter, setFlowFilter] = useState<'all' | 'producing' | 'consuming' | 'idle'>('all');
+  const [catalogSort, setCatalogSort] = useState<'activity' | 'name' | 'production' | 'consumption'>('activity');
   const [production, setProduction] = useState<Production | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -352,17 +445,18 @@ function ProductionView() {
     productionRate: production?.comparison.reduce((sum, series) => sum + (series.points.at(-1)?.productionRate ?? 0), 0) ?? 0,
     consumptionRate: production?.comparison.reduce((sum, series) => sum + (series.points.at(-1)?.consumptionRate ?? 0), 0) ?? 0
   } : production?.points.at(-1);
-  const visibleItems = useMemo(() => {
+  const visibleCatalog = useMemo(() => {
     const needle = itemSearch.trim().toLocaleLowerCase(locale);
-    return (production?.availableItems ?? []).filter((item) => !needle || item.includes(needle) || labelFor(labels, item).toLocaleLowerCase(locale).includes(needle)).slice(0, needle ? 30 : 18);
-  }, [itemSearch, labels, production?.availableItems]);
+    const entries = (production?.catalog ?? []).filter((entry) => (!needle || entry.item.includes(needle) || labelFor(labels, entry.item).toLocaleLowerCase(locale).includes(needle)) && (flowFilter === 'all' || flowFilter === 'producing' && entry.productionRate > 0 || flowFilter === 'consuming' && entry.consumptionRate > 0 || flowFilter === 'idle' && entry.productionRate <= 0 && entry.consumptionRate <= 0));
+    return [...entries].sort((left, right) => catalogSort === 'name' ? labelFor(labels, left.item).localeCompare(labelFor(labels, right.item), locale) : catalogSort === 'production' ? right.productionRate - left.productionRate : catalogSort === 'consumption' ? right.consumptionRate - left.consumptionRate : Math.max(right.productionRate, right.consumptionRate) - Math.max(left.productionRate, left.consumptionRate)).slice(0, 120);
+  }, [itemSearch, labels, production?.catalog, locale, flowFilter, catalogSort]);
   const colors = ['#f29b38', '#5db5a4', '#a984dc', '#63a9df'];
   return <section className="content">
     <PageHeader eyebrow="SPOLEČNÁ TOVÁRNA" title="Výroba" description="Vyberte až čtyři položky a porovnejte jejich tok v jednom grafu." actions={<div className="range-picker" aria-label="Časový rozsah">{['15m', '1h', '6h', '24h'].map((value) => <button className={range === value ? 'active' : ''} key={value} onClick={() => setRange(value)}>{value}</button>)}</div>} />
     {error && <p className="error banner">{error}</p>}
-    <Panel title="Položky k porovnání" subtitle={`${selectedItems.length}/4 vybráno · bez výběru se zobrazí celá továrna`} className="item-filter-panel">
-      <div className="item-filter-toolbar"><label><span>Hledat položku</span><input type="search" placeholder="Např. železný plát…" value={itemSearch} onChange={(event) => setItemSearch(event.target.value)} /></label><button type="button" className={!selectedItems.length ? 'filter-all active' : 'filter-all'} onClick={() => setSelectedItems([])} aria-pressed={!selectedItems.length}>Celá továrna</button></div>
-      <div className="item-filter-options">{visibleItems.map((item) => <button type="button" className={selectedItems.includes(item) ? 'selected' : ''} key={item} onClick={() => toggleItem(item)} aria-pressed={selectedItems.includes(item)}><ItemIcon prototype={item} /><span>{labelFor(labels, item)}</span>{selectedItems.includes(item) && <b>{selectedItems.indexOf(item) + 1}</b>}</button>)}{production && !visibleItems.length && <p>Žádná položka neodpovídá hledání.</p>}</div>
+    <Panel title="Katalog položek" subtitle={`${selectedItems.length}/4 vybráno k porovnání · data společné hráčské force`} className="item-filter-panel" action={<button type="button" className="secondary with-icon" onClick={() => setCatalogOpen((value) => !value)}><Glyph name={catalogOpen ? 'close' : 'Production'} />{catalogOpen ? 'Zavřít katalog' : 'Otevřít katalog'}</button>}>
+      <div className="catalog-selection"><button type="button" className={!selectedItems.length ? 'filter-all active' : 'filter-all'} onClick={() => setSelectedItems([])} aria-pressed={!selectedItems.length}>Celá továrna</button>{selectedItems.map((selected, index) => <button type="button" className="selected-item-chip" onClick={() => toggleItem(selected)} key={selected}><ItemIcon prototype={selected} /><span><strong>{index + 1}. {labelFor(labels, selected)}</strong><small>Kliknutím odebrat</small></span><Glyph name="close" /></button>)}{!selectedItems.length && <p>Graf nyní zobrazuje součet všech vyráběných a spotřebovávaných položek.</p>}</div>
+      {catalogOpen && <div className="catalog-drawer"><div className="catalog-toolbar"><label><span>Hledat položku</span><input type="search" placeholder="Český název nebo prototype…" value={itemSearch} onChange={(event) => setItemSearch(event.target.value)} autoFocus /></label><label><span>Tok</span><select value={flowFilter} onChange={(event) => setFlowFilter(event.target.value as typeof flowFilter)}><option value="all">Všechny položky</option><option value="producing">Právě vyráběné</option><option value="consuming">Právě spotřebovávané</option><option value="idle">Nyní bez toku</option></select></label><label><span>Řazení</span><select value={catalogSort} onChange={(event) => setCatalogSort(event.target.value as typeof catalogSort)}><option value="activity">Nejvyšší aktivita</option><option value="production">Nejvyšší výroba</option><option value="consumption">Nejvyšší spotřeba</option><option value="name">Podle názvu</option></select></label></div><div className="catalog-result-meta"><span>{visibleCatalog.length} položek</span><span>Vybrat lze maximálně čtyři</span></div><div className="catalog-grid">{visibleCatalog.map((entry) => <button type="button" className={selectedItems.includes(entry.item) ? 'selected' : ''} key={entry.item} onClick={() => toggleItem(entry.item)} aria-pressed={selectedItems.includes(entry.item)}><ItemIcon prototype={entry.item} /><span><strong>{labelFor(labels, entry.item)}</strong><small>{entry.item}</small></span><span className="catalog-rates"><b className="produced">+{preciseNumber.format(entry.productionRate)}</b><b className="consumed">−{preciseNumber.format(entry.consumptionRate)}</b></span>{selectedItems.includes(entry.item) && <i>{selectedItems.indexOf(entry.item) + 1}</i>}</button>)}{production && !visibleCatalog.length && <div className="catalog-empty">Žádná položka neodpovídá zvoleným filtrům.</div>}</div></div>}
     </Panel>
     <div className="production-metrics"><Metric label={selectedItems.length ? 'Vybrané položky · výroba' : 'Nyní se vyrábí'} value={`${compactNumber.format(current?.productionRate ?? 0)} / min`} tone="production" note="klouzavý průměr 1 min" /><Metric label={selectedItems.length ? 'Vybrané položky · spotřeba' : 'Nyní se spotřebovává'} value={`${compactNumber.format(current?.consumptionRate ?? 0)} / min`} tone="consumption" note="klouzavý průměr 1 min" /><Metric label="Poslední vzorek" value={timeAgo(production?.lastUpdatedAt ?? null)} note={`${production?.sampleCount ?? 0} vzorků v grafu`} /></div>
     <Panel title={selectedItems.length ? 'Porovnání položek' : 'Tok celé továrny'} subtitle={selectedItems.length ? 'Jednotlivé položky ve stejném měřítku' : 'Součet výroby a spotřeby za minutu'} action={selectedItems.length ? <div className="chart-mode"><button className={comparisonMetric === 'productionRate' ? 'active' : ''} onClick={() => setComparisonMetric('productionRate')}>Výroba</button><button className={comparisonMetric === 'consumptionRate' ? 'active' : ''} onClick={() => setComparisonMetric('consumptionRate')}>Spotřeba</button></div> : undefined} className="chart-panel">
@@ -395,10 +489,14 @@ function ReportItems({ items, labels }: { items: ProductionItem[]; labels: Recor
 function ServerView() {
   const [message, setMessage] = useState('');
   const [notice, setNotice] = useState('');
+  const [queryResult, setQueryResult] = useState<{ action: string; output: string; at: string } | null>(null);
+  const [querying, setQuerying] = useState('');
   const [download, setDownload] = useState<{ name: string; version: string; fileName: string; size: number } | null>(null);
   useEffect(() => { void api<{ name: string; version: string; fileName: string; size: number }>('/api/downloads/hal-telemetry/info').then(setDownload).catch(() => setDownload(null)); }, []);
   async function send(event: React.FormEvent) { event.preventDefault(); try { await api('/api/server/message', { method: 'POST', body: JSON.stringify({ message }) }); setMessage(''); setNotice('Zpráva byla doručena do hry.'); } catch (reason) { setNotice(reason instanceof Error ? reason.message : 'Zpráva se nezdařila.'); } }
-  return <section className="content"><PageHeader eyebrow="BEZPEČNÉ OVLÁDÁNÍ" title="Server" description="Praktické nástroje pro oba správce továrny." /><div className="server-layout"><Panel title="Telemetry mod" subtitle="Stejná verze, jaká patří k tomuto nasazení."><div className="telemetry-download"><div><span className="download-icon"><Glyph name="download" /></span><div><strong>{download?.fileName ?? 'hal-telemetry'}</strong><small>{download ? `Verze ${download.version} · ${Math.ceil(download.size / 1024)} kB` : 'Balíček v tomto prostředí není dostupný.'}</small></div></div>{download && <a className="primary with-icon button-link" href="/api/downloads/hal-telemetry" download={download.fileName}><Glyph name="download" />Stáhnout mod</a>}</div></Panel><Panel title="Zpráva do hry" subtitle="Zobrazí se všem právě připojeným hráčům."><form className="message-form" onSubmit={send}><input placeholder="Napište krátkou zprávu…" maxLength={250} value={message} onChange={(event) => setMessage(event.target.value)} required /><button className="primary icon-button" aria-label="Odeslat zprávu"><Glyph name="send" /></button></form></Panel></div>{notice && <div className="notice" role="status">{notice}</div>}</section>;
+  async function query(action: string) { setQuerying(action); setNotice(''); try { setQueryResult(await api('/api/server/query', { method: 'POST', body: JSON.stringify({ action }) })); } catch (reason) { setNotice(reason instanceof Error ? reason.message : 'Dotaz se nezdařil.'); } finally { setQuerying(''); } }
+  const safeQueries = [{ id: 'players', label: 'Online hráči', icon: '👥' }, { id: 'time', label: 'Stáří mapy', icon: '🕐' }, { id: 'version', label: 'Verze hry', icon: '🏷️' }, { id: 'evolution', label: 'Evoluce nepřátel', icon: '🪲' }, { id: 'admins', label: 'Administrátoři', icon: '🛡️' }, { id: 'whitelist', label: 'Whitelist', icon: '📋' }];
+  return <section className="content"><PageHeader eyebrow="BEZPEČNÉ OVLÁDÁNÍ" title="Server" description="Pouze pevně povolené informační RCON dotazy a zprávy do hry. Žádná raw konzole." /><div className="server-layout"><Panel title="Telemetry mod" subtitle="Stejná verze, jaká patří k tomuto nasazení."><div className="telemetry-download"><div><span className="download-icon"><Glyph name="download" /></span><div><strong>{download?.fileName ?? 'hal-telemetry'}</strong><small>{download ? `Verze ${download.version} · ${Math.ceil(download.size / 1024)} kB` : 'Balíček v tomto prostředí není dostupný.'}</small></div></div>{download && <a className="primary with-icon button-link" href="/api/downloads/hal-telemetry" download={download.fileName}><Glyph name="download" />Stáhnout mod</a>}</div></Panel><Panel title="Zpráva do hry" subtitle="Zobrazí se všem právě připojeným hráčům."><form className="message-form" onSubmit={send}><input placeholder="Napište krátkou zprávu…" maxLength={250} value={message} onChange={(event) => setMessage(event.target.value)} required /><button className="primary icon-button" aria-label="Odeslat zprávu"><Glyph name="send" /></button></form></Panel></div><Panel title="Informační RCON nástroje" subtitle="Příkazy pouze čtou stav hry; nemění mapu, hráče ani nastavení."><div className="safe-rcon-grid">{safeQueries.map((entry) => <button className="safe-rcon-button" type="button" disabled={Boolean(querying)} onClick={() => void query(entry.id)} key={entry.id}><span>{entry.icon}</span><strong>{querying === entry.id ? 'Načítám…' : entry.label}</strong></button>)}</div>{queryResult && <div className="rcon-output"><header><span>FACTORIO · {queryResult.action.toLocaleUpperCase('cs')}</span><time>{new Date(queryResult.at).toLocaleTimeString('cs-CZ')}</time></header><pre>{queryResult.output}</pre></div>}</Panel>{notice && <div className="notice" role="status">{notice}</div>}</section>;
 }
 
 function initialTheme(): Theme {
@@ -439,6 +537,8 @@ export function App() {
     if (active === 'Tasks') return <TasksView onChanged={() => void load()} />;
     if (active === 'Messages') return <MessagesView />;
     if (active === 'Production') return <ProductionView />;
+    if (active === 'Goals') return <GoalsView />;
+    if (active === 'Achievements') return <AchievementsView />;
     if (active === 'Report') return <ReportView />;
     if (active === 'Activity') return <ActivityView />;
     if (active === 'Profiles') return <ProfilesView />;
@@ -447,5 +547,5 @@ export function App() {
   if (!sessionChecked) return <div className="page-loading full"><span className="brand-mark">H</span></div>;
   if (!user) return <Login onLogin={setUser} theme={theme} setTheme={setTheme} />;
   async function logout() { try { await api('/api/auth/logout', { method: 'POST' }); } finally { csrfToken = ''; setUser(null); setData(null); } }
-  return <labelsContext.Provider value={{ labels, locale }}><main className="app-shell"><aside className="sidebar"><div className="brand"><span className="brand-mark">H</span><div><strong>HAL Factory</strong><small>factorio.mkdevs.cz</small></div></div><Navigation active={active} setActive={setActive} /><footer><div className="operator"><span style={{ '--avatar-color': user.color } as CSSProperties}>{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>{user.factorioName}</small></div></div><div className="sidebar-controls"><LanguageToggle locale={locale} setLocale={setLocale} /><div className="sidebar-actions"><ThemeToggle theme={theme} setTheme={setTheme} /><button className="icon-button" onClick={() => void logout()} aria-label="Odhlásit se" title="Odhlásit se"><Glyph name="logout" /></button></div></div></footer></aside><div className="app-main"><header className="mobile-header"><div className="brand"><span className="brand-mark">H</span><div><strong>HAL Factory</strong><small>{navigation.find((item) => item.id === active)?.label}</small></div></div><button className="icon-button menu-button" onClick={() => setMenuOpen(true)} aria-label="Otevřít menu" aria-expanded={menuOpen}><Glyph name="menu" /></button></header>{menuOpen && <div className="mobile-menu-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setMenuOpen(false)}><aside className="mobile-menu"><header><div className="operator"><span style={{ '--avatar-color': user.color } as CSSProperties}>{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>{user.factorioName}</small></div></div><button className="icon-button" onClick={() => setMenuOpen(false)} aria-label="Zavřít menu"><Glyph name="close" /></button></header><Navigation active={active} setActive={setActive} onNavigate={() => setMenuOpen(false)} /><footer><div><small>Jazyk názvů položek</small><LanguageToggle locale={locale} setLocale={setLocale} /></div><ThemeToggle theme={theme} setTheme={setTheme} /><button className="secondary with-icon" onClick={() => void logout()}><Glyph name="logout" />Odhlásit</button></footer></aside></div>}{error && <div className="error banner global" role="alert">{error}</div>}{content}</div></main></labelsContext.Provider>;
+  return <labelsContext.Provider value={{ labels, locale }}><GoalCelebrationLayer /><main className="app-shell"><aside className="sidebar"><div className="brand"><span className="brand-mark">H</span><div><strong>HAL Factory</strong><small>factorio.mkdevs.cz</small></div></div><Navigation active={active} setActive={setActive} /><footer><div className="operator"><span style={{ '--avatar-color': user.color } as CSSProperties}>{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>{user.factorioName}</small></div></div><div className="sidebar-controls"><LanguageToggle locale={locale} setLocale={setLocale} /><div className="sidebar-actions"><ThemeToggle theme={theme} setTheme={setTheme} /><button className="icon-button" onClick={() => void logout()} aria-label="Odhlásit se" title="Odhlásit se"><Glyph name="logout" /></button></div></div></footer></aside><div className="app-main"><header className="mobile-header"><div className="brand"><span className="brand-mark">H</span><div><strong>HAL Factory</strong><small>{navigation.find((item) => item.id === active)?.label}</small></div></div><button className="icon-button menu-button" onClick={() => setMenuOpen(true)} aria-label="Otevřít menu" aria-expanded={menuOpen}><Glyph name="menu" /></button></header>{menuOpen && <div className="mobile-menu-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setMenuOpen(false)}><aside className="mobile-menu"><header><div className="operator"><span style={{ '--avatar-color': user.color } as CSSProperties}>{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>{user.factorioName}</small></div></div><button className="icon-button" onClick={() => setMenuOpen(false)} aria-label="Zavřít menu"><Glyph name="close" /></button></header><Navigation active={active} setActive={setActive} onNavigate={() => setMenuOpen(false)} /><footer><div><small>Jazyk názvů položek</small><LanguageToggle locale={locale} setLocale={setLocale} /></div><ThemeToggle theme={theme} setTheme={setTheme} /><button className="secondary with-icon" onClick={() => void logout()}><Glyph name="logout" />Odhlásit</button></footer></aside></div>}{error && <div className="error banner global" role="alert">{error}</div>}{content}</div></main></labelsContext.Provider>;
 }

@@ -17,6 +17,9 @@ import { MockFactoryAdapter } from './mock-adapter.js';
 import { FactorioRconAdapter } from './rcon-adapter.js';
 import { FactorioLogTailer } from './log-tailer.js';
 import { summarizeProduction } from './production.js';
+import { achievementDefinitions, type AchievementMetric } from './achievements.js';
+import { advanceProductionGoals } from './production-goals.js';
+import type { SafeRconQuery } from './factory-adapter.js';
 
 const SESSION_COOKIE = 'hal_session';
 const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
@@ -69,6 +72,73 @@ function recordActivity(db: AppDatabase, eventType: string, actorUserId: string 
     .run(randomUUID(), 'app', eventType, actorUserId, JSON.stringify(payload), now, now);
 }
 
+type AchievementMetrics = Partial<Record<AchievementMetric, number>>;
+
+function achievementState(db: AppDatabase, snapshot: FactorySnapshot, persistUnlocks: boolean) {
+  const users = db.prepare('SELECT id,display_name,factorio_name FROM users ORDER BY display_name').all() as Array<{ id: string; display_name: string; factorio_name: string }>;
+  const groupedCount = (sql: string) => new Map((db.prepare(sql).all() as Array<{ user_id: string; count: number }>).map((row) => [row.user_id, Number(row.count)]));
+  const completedTasks = groupedCount("SELECT ta.user_id,count(*) AS count FROM task_assignees ta JOIN tasks t ON t.id=ta.task_id WHERE t.status='Done' GROUP BY ta.user_id");
+  const createdTasks = groupedCount('SELECT created_by AS user_id,count(*) AS count FROM tasks GROUP BY created_by');
+  const messages = groupedCount('SELECT user_id,count(*) AS count FROM messages GROUP BY user_id');
+  const comments = groupedCount('SELECT user_id,count(*) AS count FROM task_comments GROUP BY user_id');
+  const reactions = groupedCount('SELECT user_id,count(*) AS count FROM message_reactions GROUP BY user_id');
+  const playerScopes = users.map((user) => {
+    const live = snapshot.players.find((player) => player.factorioName === user.factorio_name);
+    const metrics: AchievementMetrics = {
+      playtime: live?.playtimeSeconds ?? 0,
+      handCrafted: live?.personalActivity.handCrafted ?? 0,
+      mined: live?.personalActivity.mined ?? 0,
+      built: live?.personalActivity.built ?? 0,
+      deaths: live?.personalActivity.deaths ?? 0,
+      completedTasks: completedTasks.get(user.id) ?? 0,
+      createdTasks: createdTasks.get(user.id) ?? 0,
+      messages: messages.get(user.id) ?? 0,
+      comments: comments.get(user.id) ?? 0,
+      reactions: reactions.get(user.id) ?? 0
+    };
+    return { scopeKey: `player:${user.id}`, userId: user.id, name: user.display_name, metrics };
+  });
+  const count = (sql: string) => Number((db.prepare(sql).get() as { count: number }).count);
+  const factoryMetrics: AchievementMetrics = {
+    totalProduced: snapshot.sharedFactory.reduce((sum, item) => sum + Math.max(0, item.produced), 0),
+    totalConsumed: snapshot.sharedFactory.reduce((sum, item) => sum + Math.max(0, item.consumed), 0),
+    activeItems: snapshot.sharedFactory.filter((item) => item.productionRate > 0 || item.consumptionRate > 0).length,
+    completedGoals: count("SELECT count(*) AS count FROM production_goals WHERE status='completed'"),
+    factoryTasks: count("SELECT count(*) AS count FROM tasks WHERE status='Done'"),
+    factoryMessages: count('SELECT count(*) AS count FROM messages'),
+    factoryReactions: count('SELECT count(*) AS count FROM message_reactions'),
+    serverUptime: snapshot.server.uptimeSeconds ?? 0,
+    onlinePlayers: snapshot.players.filter((player) => player.online).length
+  };
+  const unlocks = new Map((db.prepare('SELECT achievement_key,scope_key,unlocked_at FROM achievement_unlocks').all() as Array<{ achievement_key: string; scope_key: string; unlocked_at: string }>).map((row) => [`${row.achievement_key}:${row.scope_key}`, row.unlocked_at]));
+  const insertUnlock = db.prepare('INSERT OR IGNORE INTO achievement_unlocks(achievement_key,scope_key,unlocked_at) VALUES(?,?,?)');
+  const result: Array<object> = [];
+  const scopes = [{ scopeKey: 'factory', userId: null, name: 'Společná továrna', metrics: factoryMetrics }, ...playerScopes];
+  for (const definition of achievementDefinitions) {
+    for (const scope of scopes.filter((entry) => definition.audience === 'factory' ? entry.scopeKey === 'factory' : entry.scopeKey !== 'factory')) {
+      const value = Math.max(0, scope.metrics[definition.metric] ?? 0);
+      const unlockKey = `${definition.key}:${scope.scopeKey}`;
+      let unlockedAt = unlocks.get(unlockKey) ?? null;
+      if (!unlockedAt && value >= definition.target && persistUnlocks) {
+        unlockedAt = timestamp();
+        if (insertUnlock.run(definition.key, scope.scopeKey, unlockedAt).changes) {
+          unlocks.set(unlockKey, unlockedAt);
+          recordActivity(db, 'achievement.unlocked', scope.userId, { title: definition.title, achievementKey: definition.key, scope: scope.name });
+        }
+      }
+      result.push({ ...definition, scopeKey: scope.scopeKey, scopeName: scope.name, value, progress: Math.min(1, value / definition.target), unlockedAt });
+    }
+  }
+  return result;
+}
+
+let czechLabelsPromise: Promise<Record<string, string>> | null = null;
+async function czechPrototypeLabel(prototype: string) {
+  czechLabelsPromise ??= readFile(resolve(bundledIconDirectory, 'labels.cs.json'), 'utf8').then((value) => JSON.parse(value) as Record<string, string>).catch(() => ({}));
+  const labels = await czechLabelsPromise;
+  return labels[prototype] ?? prototype.split('-').join(' ');
+}
+
 function listTasks(db: AppDatabase) {
   const tasks = db.prepare(`SELECT t.*, COALESCE((SELECT json_group_array(user_id) FROM task_assignees WHERE task_id=t.id), '[]') AS assignee_ids,
       COALESCE((SELECT json_group_array(tag) FROM task_tags WHERE task_id=t.id), '[]') AS tags
@@ -113,6 +183,40 @@ function listMessages(db: AppDatabase, currentUserId: string) {
     }, {})),
     readBy: reads.filter((read) => read.message_id === message.id && read.user_id !== message.user_id).map((read) => read.display_name)
   }));
+}
+
+function listProductionGoals(db: AppDatabase, snapshot: FactorySnapshot) {
+  const goals = db.prepare(`SELECT g.id,g.item,g.target_amount,g.progress_amount,g.status,g.created_at,g.updated_at,g.completed_at,g.announced_at,
+      g.linked_task_id,t.title AS linked_task_title,u.display_name AS created_by_name
+    FROM production_goals g
+    LEFT JOIN tasks t ON t.id=g.linked_task_id
+    JOIN users u ON u.id=g.created_by
+    ORDER BY CASE g.status WHEN 'active' THEN 1 ELSE 2 END,g.created_at DESC`).all() as Array<{
+      id: string; item: string; target_amount: number; progress_amount: number; status: 'active' | 'completed'; created_at: string; updated_at: string;
+      completed_at: string | null; announced_at: string | null; linked_task_id: string | null; linked_task_title: string | null; created_by_name: string;
+    }>;
+  const counters = new Map(snapshot.sharedFactory.map((entry) => [entry.item, entry]));
+  return goals.map((goal) => {
+    const rate = Math.max(0, counters.get(goal.item)?.productionRate ?? 0);
+    const remaining = Math.max(0, goal.target_amount - goal.progress_amount);
+    return {
+      id: goal.id,
+      item: goal.item,
+      targetAmount: goal.target_amount,
+      progressAmount: goal.progress_amount,
+      progress: Math.min(1, goal.progress_amount / goal.target_amount),
+      productionRate: rate,
+      etaSeconds: goal.status === 'active' && rate > 0 ? Math.ceil(remaining / rate * 60) : null,
+      status: goal.status,
+      createdAt: goal.created_at,
+      updatedAt: goal.updated_at,
+      completedAt: goal.completed_at,
+      announcedInGame: Boolean(goal.announced_at),
+      linkedTaskId: goal.linked_task_id,
+      linkedTaskTitle: goal.linked_task_title,
+      createdByName: goal.created_by_name
+    };
+  });
 }
 
 function storedSnapshot(db: AppDatabase): FactorySnapshot | null {
@@ -164,6 +268,27 @@ class TelemetryPoller {
           .run('hal-telemetry', snapshot.eventCursor, collectedAt);
       });
       transaction();
+      const completedGoals = advanceProductionGoals(this.db, snapshot, collectedAt);
+      for (const goal of completedGoals) {
+        const label = await czechPrototypeLabel(goal.item);
+        const body = `🏆 Výrobní cíl splněn: ${new Intl.NumberFormat('cs-CZ').format(goal.targetAmount)}× ${label}. Skvělá práce!`;
+        this.db.prepare('INSERT INTO messages(id,user_id,body,created_at,updated_at,is_pinned) VALUES(?,?,?,?,?,1)')
+          .run(randomUUID(), goal.createdBy, body, collectedAt, collectedAt);
+        recordActivity(this.db, 'production-goal.completed', goal.createdBy, { goalId: goal.id, item: goal.item, targetAmount: goal.targetAmount, message: body });
+      }
+      achievementState(this.db, snapshot, true);
+      const unannounced = this.db.prepare("SELECT id,item,target_amount FROM production_goals WHERE status='completed' AND announced_at IS NULL ORDER BY completed_at").all() as Array<{ id: string; item: string; target_amount: number }>;
+      for (const goal of unannounced) {
+        const label = await czechPrototypeLabel(goal.item);
+        try {
+          await this.adapter.sendMessage(`🏆 Výrobní cíl splněn: ${new Intl.NumberFormat('cs-CZ').format(goal.target_amount)}× ${label}!`);
+          this.db.prepare('UPDATE production_goals SET announced_at=? WHERE id=?').run(timestamp(), goal.id);
+          recordAudit(this.db, null, 'rcon.goal-completed', 'success', { goalId: goal.id });
+        } catch (error) {
+          recordAudit(this.db, null, 'rcon.goal-completed', 'failed', { goalId: goal.id });
+          requestLog('goal announcement failed', error);
+        }
+      }
       // Retention: raw per-minute samples for 48 hours. Downsampling is added before longer retention is enabled.
       this.db.prepare("DELETE FROM telemetry_snapshots WHERE collected_at < datetime('now', '-48 hours')").run();
     } catch (error) {
@@ -382,6 +507,45 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     return { ok: true };
   });
 
+  app.get('/api/goals', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    return listProductionGoals(db, poller.latest());
+  });
+
+  app.post('/api/goals', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const body = z.object({
+      item: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/),
+      targetAmount: z.number().finite().positive().max(1_000_000_000_000),
+      linkedTaskId: z.string().uuid().nullable().optional()
+    }).safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: 'Invalid production goal.' });
+    if (body.data.linkedTaskId && !db.prepare('SELECT 1 FROM tasks WHERE id=?').get(body.data.linkedTaskId)) return reply.code(400).send({ error: 'Linked task does not exist.' });
+    const snapshot = poller.latest();
+    const baseline = Math.max(0, snapshot.sharedFactory.find((item) => item.item === body.data.item)?.produced ?? 0);
+    const id = randomUUID(); const now = timestamp();
+    db.prepare(`INSERT INTO production_goals(id,item,target_amount,progress_amount,last_counter,linked_task_id,created_by,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,'active',?,?)`).run(id, body.data.item, body.data.targetAmount, 0, baseline, body.data.linkedTaskId ?? null, user.id, now, now);
+    recordActivity(db, 'production-goal.created', user.id, { goalId: id, item: body.data.item, targetAmount: body.data.targetAmount });
+    return reply.code(201).send({ id });
+  });
+
+  app.delete('/api/goals/:id', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Invalid goal id.' });
+    const goal = db.prepare('SELECT item,status FROM production_goals WHERE id=?').get(params.data.id) as { item: string; status: string } | undefined;
+    if (!goal) return reply.code(404).send({ error: 'Production goal not found.' });
+    db.prepare('DELETE FROM production_goals WHERE id=?').run(params.data.id);
+    recordActivity(db, 'production-goal.deleted', user.id, { goalId: params.data.id, item: goal.item, status: goal.status });
+    return reply.code(204).send();
+  });
+
+  app.get('/api/achievements', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    return { definitions: achievementDefinitions.length, achievements: achievementState(db, poller.latest(), true) };
+  });
+
   app.get('/api/messages', async (request, reply) => {
     const user = requireUser(db, request, reply); if (!user) return;
     return listMessages(db, user.id);
@@ -450,11 +614,39 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
   app.get('/api/profiles', async (request, reply) => {
     if (!requireUser(db, request, reply)) return;
     const snapshot = poller.latest();
+    achievementState(db, snapshot, true);
     const users = db.prepare('SELECT id,login,display_name,factorio_name,color,last_online_at FROM users ORDER BY display_name').all() as Array<{ id: string; login: string; display_name: string; factorio_name: string; color: string; last_online_at: string | null }>;
-    const completed = db.prepare(`SELECT ta.user_id, count(*) AS count FROM task_assignees ta JOIN tasks t ON t.id=ta.task_id WHERE t.status='Done' GROUP BY ta.user_id`).all() as Array<{ user_id: string; count: number }>;
+    const grouped = (sql: string) => new Map((db.prepare(sql).all() as Array<{ user_id: string; count: number }>).map((row) => [row.user_id, Number(row.count)]));
+    const completed = grouped("SELECT ta.user_id,count(*) AS count FROM task_assignees ta JOIN tasks t ON t.id=ta.task_id WHERE t.status='Done' GROUP BY ta.user_id");
+    const open = grouped("SELECT ta.user_id,count(*) AS count FROM task_assignees ta JOIN tasks t ON t.id=ta.task_id WHERE t.status!='Done' AND t.is_archived=0 GROUP BY ta.user_id");
+    const created = grouped('SELECT created_by AS user_id,count(*) AS count FROM tasks GROUP BY created_by');
+    const messages = grouped('SELECT user_id,count(*) AS count FROM messages GROUP BY user_id');
+    const comments = grouped('SELECT user_id,count(*) AS count FROM task_comments GROUP BY user_id');
+    const reactions = grouped('SELECT user_id,count(*) AS count FROM message_reactions GROUP BY user_id');
+    const completedGoals = grouped("SELECT created_by AS user_id,count(*) AS count FROM production_goals WHERE status='completed' GROUP BY created_by");
+    const achievementRows = db.prepare("SELECT substr(scope_key,8) AS user_id,count(*) AS count FROM achievement_unlocks WHERE scope_key LIKE 'player:%' GROUP BY scope_key").all() as Array<{ user_id: string; count: number }>;
+    const achievements = new Map(achievementRows.map((row) => [row.user_id, Number(row.count)]));
     return users.map((entry) => {
       const live = snapshot.players.find((player) => player.factorioName === entry.factorio_name);
-      return { id: entry.id, displayName: entry.display_name, factorioName: entry.factorio_name, color: entry.color, online: live?.online ?? false, lastOnlineAt: live?.lastOnlineAt ?? entry.last_online_at, playtimeSeconds: live?.playtimeSeconds ?? 0, completedTasks: completed.find((item) => item.user_id === entry.id)?.count ?? 0, personalActivity: live?.personalActivity ?? { handCrafted: 0, mined: 0, built: 0, deaths: 0 } };
+      const playtimeSeconds = live?.playtimeSeconds ?? 0;
+      const personalActivity = live?.personalActivity ?? { handCrafted: 0, mined: 0, built: 0, deaths: 0 };
+      const hours = Math.max(1 / 60, playtimeSeconds / 3_600);
+      return {
+        id: entry.id, displayName: entry.display_name, factorioName: entry.factorio_name, color: entry.color,
+        online: live?.online ?? false, lastOnlineAt: live?.lastOnlineAt ?? entry.last_online_at, playtimeSeconds,
+        completedTasks: completed.get(entry.id) ?? 0,
+        personalActivity,
+        rates: { builtPerHour: personalActivity.built / hours, minedPerHour: personalActivity.mined / hours, craftedPerHour: personalActivity.handCrafted / hours },
+        collaboration: {
+          openTasks: open.get(entry.id) ?? 0,
+          createdTasks: created.get(entry.id) ?? 0,
+          messages: messages.get(entry.id) ?? 0,
+          comments: comments.get(entry.id) ?? 0,
+          reactions: reactions.get(entry.id) ?? 0,
+          completedGoals: completedGoals.get(entry.id) ?? 0,
+          achievements: achievements.get(entry.id) ?? 0
+        }
+      };
     });
   });
 
@@ -522,8 +714,9 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       const topProduced = [...snapshot.sharedFactory].sort((a, b) => b.productionRate - a.productionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.productionRate, rate: item.productionRate }));
       const topConsumed = [...snapshot.sharedFactory].sort((a, b) => b.consumptionRate - a.consumptionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.consumptionRate, rate: item.consumptionRate }));
       const availableItems = [...snapshot.sharedFactory].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate)).map((item) => item.item);
+      const catalog = [...snapshot.sharedFactory].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate));
       const comparison = comparisonItems.map((item) => ({ item, points: buildMockPoints(item) }));
-      return { range: query.data.range, points, comparison, topProduced, topConsumed, availableItems, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null, sampleCount: pointCount, basis: 'current', lastUpdatedAt: snapshot.generatedAt };
+      return { range: query.data.range, points, comparison, topProduced, topConsumed, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null, sampleCount: pointCount, basis: 'current', lastUpdatedAt: snapshot.generatedAt };
     }
     const cutoff = new Date(Date.now() - minutes * 60_000).toISOString();
     const rows = db.prepare("SELECT collected_at,payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version=2 AND collected_at>=? ORDER BY collected_at").all(cutoff) as Array<{ collected_at: string; payload: Buffer }>;
@@ -539,6 +732,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     const availableItems = [...(latest?.sharedFactory ?? [])]
       .sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate))
       .map((item) => item.item);
+    const catalog = [...(latest?.sharedFactory ?? [])].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate));
     const points = comparisonItems.length === 1
       ? summarizeProduction(snapshots.map((snapshot) => ({ ...snapshot, sharedFactory: snapshot.sharedFactory.filter((item) => item.item === comparisonItems[0]) }))).points
       : summary.points;
@@ -546,7 +740,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       item: selectedItem,
       points: summarizeProduction(snapshots.map((snapshot) => ({ ...snapshot, sharedFactory: snapshot.sharedFactory.filter((item) => item.item === selectedItem) }))).points
     }));
-    return { range: query.data.range, ...summary, points, comparison, availableItems, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null };
+    return { range: query.data.range, ...summary, points, comparison, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null };
   });
 
   app.get('/api/icons/:prototype', async (request, reply) => {
@@ -623,6 +817,21 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     if (!body.success) return reply.code(400).send({ error: 'Invalid message.' });
     try { await adapter.sendMessage(body.data.message); recordAudit(db, user.id, 'rcon.message', 'success'); return { ok: true }; }
     catch { recordAudit(db, user.id, 'rcon.message', 'failed'); return reply.code(502).send({ error: 'Message failed.' }); }
+  });
+
+  app.post('/api/server/query', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const body = z.object({ action: z.enum(['players', 'time', 'version', 'evolution', 'admins', 'whitelist']) }).safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: 'Unknown safe server query.' });
+    try {
+      const output = (await adapter.query(body.data.action as SafeRconQuery)).trim().slice(0, 12_000);
+      recordAudit(db, user.id, `rcon.query.${body.data.action}`, 'success');
+      recordActivity(db, 'rcon.query', user.id, { action: body.data.action });
+      return { action: body.data.action, output: output || 'Factorio nevrátilo žádný text.', at: timestamp() };
+    } catch {
+      recordAudit(db, user.id, `rcon.query.${body.data.action}`, 'failed');
+      return reply.code(502).send({ error: 'RCON query failed.' });
+    }
   });
 
   const webRoot = resolve(import.meta.dirname, '../../web/dist');

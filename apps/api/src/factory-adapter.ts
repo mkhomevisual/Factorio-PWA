@@ -31,8 +31,11 @@ export type FactorySnapshot = {
   eventCursor?: string;
 };
 
+export type SafeRconQuery = 'players' | 'time' | 'version' | 'evolution' | 'admins' | 'whitelist';
+
 export interface FactoryAdapter {
   getSnapshot(afterEventId?: string): Promise<FactorySnapshot>;
   save(): Promise<void>;
   sendMessage(message: string): Promise<void>;
+  query(command: SafeRconQuery): Promise<string>;
 }
