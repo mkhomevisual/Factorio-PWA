@@ -15,6 +15,7 @@ import type { AppDatabase } from './db.js';
 import type { FactoryAdapter } from './factory-adapter.js';
 import { MockFactoryAdapter } from './mock-adapter.js';
 import { FactorioRconAdapter } from './rcon-adapter.js';
+import { FactorioLogTailer } from './log-tailer.js';
 
 const SESSION_COOKIE = 'hal_session';
 const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
@@ -109,6 +110,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
   const adapter = options.adapter ?? (config.FACTORY_MODE === 'mock' ? new MockFactoryAdapter() : new FactorioRconAdapter(config));
   const app = Fastify({ logger: false, trustProxy: config.NODE_ENV === 'production' });
   const poller = new TelemetryPoller(db, adapter);
+  const logTailer = new FactorioLogTailer(db, config.FACTORIO_LOG_PATH);
 
   void app.register(cookie);
   void app.register(rateLimit, { global: false });
@@ -353,8 +355,8 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     void app.register(fastifyStatic, { root: webRoot, wildcard: false });
     app.setNotFoundHandler((request, reply) => request.url.startsWith('/api/') ? reply.code(404).send({ error: 'Not found.' }) : reply.sendFile('index.html'));
   }
-  app.addHook('onReady', () => { poller.start(); });
-  app.addHook('onClose', () => { poller.stop(); db.close(); });
+  app.addHook('onReady', () => { poller.start(); logTailer.start(); });
+  app.addHook('onClose', () => { poller.stop(); logTailer.stop(); db.close(); });
   return app;
 }
 

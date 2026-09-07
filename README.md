@@ -40,6 +40,10 @@ docker compose run --rm -v /local/path/icons:/input:ro app npm run icons:import 
 
 Rozhraní pak automaticky použije `/api/icons/<prototype>`. Dokud ikona není lokálně importována, zobrazí se neutrální fallback — aplikace nikdy nestahuje ani neukládá cizí herní grafiku z internetu.
 
+## Read-only Factorio log
+
+Produkční override připojuje `factorio-current.log` pouze pro čtení. Backend sleduje offset a inode, tedy log ani při rotaci nepřepisuje. Z rozpoznaných řádků vytváří activity události pro připojení/odpojení, save a běžně logovaný research či rocket launch. Autoritativní telemetry pro přesné události zajišťuje mod.
+
 ## Stav implementace
 
 Hotovo: Docker multi-stage build, non-root runtime, healthcheck, persistentní volume, PWA shell, bezpečné sessions/CSRF/login rate-limit, dvouúčtové založení, mock adaptér, bezpečný RCON adapter, základ dashboardu, SQLite základ tasků a návrh telemetry modu.

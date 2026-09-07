@@ -8,6 +8,7 @@ const environment = z.object({
   FACTORY_MODE: z.enum(['mock', 'factorio-rcon']).default('mock'),
   FACTORIO_RCON_HOST: z.string().default('server'),
   FACTORIO_RCON_PORT: z.coerce.number().int().positive().default(27015),
+  FACTORIO_LOG_PATH: z.string().default('/factorio/factorio-current.log'),
   RCON_PASSWORD_FILE: z.string().default('/run/secrets/factorio_rcon_password'),
   // z.coerce.boolean() treats the non-empty string "false" as true, which is
   // unsafe for a local HTTP mock deployment. Accept only explicit text values.
