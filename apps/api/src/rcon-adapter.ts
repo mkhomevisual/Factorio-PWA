@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { Rcon } from 'rcon-client';
+import { executeFactorioRconCommand } from './factorio-rcon-client.js';
 import type { FactoryAdapter, FactorySnapshot } from './factory-adapter.js';
 import type { Config } from './config.js';
 
@@ -10,17 +10,12 @@ export class FactorioRconAdapter implements FactoryAdapter {
 
   private async command(command: string): Promise<string> {
     const password = (await readFile(this.options.RCON_PASSWORD_FILE, 'utf8')).trim();
-    const rcon = await Rcon.connect({ host: this.options.FACTORIO_RCON_HOST, port: this.options.FACTORIO_RCON_PORT, password, timeout: 8_000 });
-    try { return await rcon.send(command); }
-    finally {
-      // Factorio can close an RCON socket immediately after it has answered.
-      // Do not let that expected close replace a successful command response.
-      try { await rcon.end(); }
-      catch (error) {
-        const message = error instanceof Error ? error.message : '';
-        if (message !== 'Not connected' && message !== 'End called twice') throw error;
-      }
-    }
+    return executeFactorioRconCommand({
+      host: this.options.FACTORIO_RCON_HOST,
+      port: this.options.FACTORIO_RCON_PORT,
+      password,
+      timeoutMs: 8_000
+    }, command);
   }
 
   async getSnapshot(afterEventId = '0'): Promise<FactorySnapshot> {
