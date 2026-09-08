@@ -691,17 +691,17 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
   app.get('/api/production', async (request, reply) => {
     if (!requireUser(db, request, reply)) return;
     const query = z.object({
-      range: z.enum(['15m', '1h', '6h', '24h']).default('1h'),
+      range: z.enum(['1m', '15m', '1h', '6h', '24h']).default('1h'),
       item: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/).optional(),
       items: z.string().max(320).optional()
     }).safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: 'Invalid production range.' });
     const comparisonItems = [...new Set((query.data.items?.split(',') ?? (query.data.item ? [query.data.item] : [])).filter((item) => /^[a-z0-9][a-z0-9_-]*$/.test(item)))].slice(0, 4);
-    const minutesByRange = { '15m': 15, '1h': 60, '6h': 360, '24h': 1440 } as const;
+    const minutesByRange = { '1m': 1, '15m': 15, '1h': 60, '6h': 360, '24h': 1440 } as const;
     const minutes = minutesByRange[query.data.range];
     if (config.FACTORY_MODE === 'mock') {
       const snapshot = await adapter.getSnapshot();
-      const pointCount = query.data.range === '24h' ? 24 : query.data.range === '6h' ? 36 : 30;
+      const pointCount = query.data.range === '1m' ? 12 : query.data.range === '24h' ? 24 : query.data.range === '6h' ? 36 : 30;
       const stepMinutes = minutes / pointCount;
       const buildMockPoints = (selectedItem?: string) => Array.from({ length: pointCount }, (_, index) => {
         const wave = 0.83 + Math.sin(index / 3.2) * 0.13 + Math.cos(index / 7) * 0.04;
