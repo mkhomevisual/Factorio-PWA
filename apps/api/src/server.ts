@@ -3,6 +3,7 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import argon2 from 'argon2';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
@@ -16,10 +17,14 @@ import type { FactoryAdapter, FactorySnapshot } from './factory-adapter.js';
 import { MockFactoryAdapter } from './mock-adapter.js';
 import { FactorioRconAdapter } from './rcon-adapter.js';
 import { FactorioLogTailer } from './log-tailer.js';
-import { summarizeProduction } from './production.js';
+import { summarizeProduction, summarizeProductionRollups } from './production.js';
 import { achievementDefinitions, type AchievementMetric } from './achievements.js';
 import { advanceProductionGoals } from './production-goals.js';
 import type { SafeRconQuery } from './factory-adapter.js';
+import type { FlowKind, OperationPreference, OperationsResponse, ProductionRange } from '@hal/contracts';
+import { listFlowRollups, persistTelemetryMetrics } from './telemetry-storage.js';
+import { inspectBlueprintString } from './blueprint-inspector.js';
+import { formatSseEvent, LiveEventBroker, publishLive, registerLiveBroker, unregisterLiveBroker } from './live-events.js';
 
 const SESSION_COOKIE = 'hal_session';
 const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
@@ -70,6 +75,7 @@ function recordActivity(db: AppDatabase, eventType: string, actorUserId: string 
   const now = timestamp();
   db.prepare('INSERT INTO activity_events(id,source,event_type,actor_user_id,payload_json,occurred_at,created_at) VALUES(?,?,?,?,?,?,?)')
     .run(randomUUID(), 'app', eventType, actorUserId, JSON.stringify(payload), now, now);
+  publishLive(db, eventType, payload);
 }
 
 type AchievementMetrics = Partial<Record<AchievementMetric, number>>;
@@ -148,6 +154,7 @@ function listTasks(db: AppDatabase) {
     FROM task_comments c JOIN users u ON u.id=c.user_id ORDER BY c.created_at`).all() as Array<{ task_id: string; id: string; body: string; created_at: string; display_name: string; color: string }>;
   return tasks.map(({ assignee_ids, due_at, is_pinned, is_archived, ...task }) => ({
     ...task,
+    code: task.id.slice(0, 6).toUpperCase(),
     assigneeIds: JSON.parse(assignee_ids),
     tags: JSON.parse(task.tags),
     dueAt: due_at,
@@ -220,23 +227,148 @@ function listProductionGoals(db: AppDatabase, snapshot: FactorySnapshot) {
 }
 
 function storedSnapshot(db: AppDatabase): FactorySnapshot | null {
-  const row = db.prepare("SELECT payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version=2 ORDER BY collected_at DESC LIMIT 1").get() as { payload: Buffer } | undefined;
+  const row = db.prepare("SELECT payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version IN (2,3) ORDER BY collected_at DESC LIMIT 1").get() as { payload: Buffer } | undefined;
   if (!row) return null;
   try {
-    const snapshot = JSON.parse(gunzipSync(row.payload).toString('utf8')) as FactorySnapshot;
-    return snapshot.contractVersion === 2 && Array.isArray(snapshot.players) && Array.isArray(snapshot.sharedFactory) ? snapshot : null;
+    const snapshot = JSON.parse(gunzipSync(row.payload).toString('utf8')) as Partial<FactorySnapshot>;
+    if (![2, 3].includes(snapshot.contractVersion ?? 0) || !Array.isArray(snapshot.players) || !Array.isArray(snapshot.sharedFactory)) return null;
+    return {
+      contractVersion: snapshot.contractVersion as 2 | 3,
+      capabilities: snapshot.capabilities ?? ['item-flow'],
+      instanceId: snapshot.instanceId ?? null,
+      generatedAtTick: snapshot.generatedAtTick ?? null,
+      generatedAt: snapshot.generatedAt ?? timestamp(),
+      server: snapshot.server ?? { online: false, version: null, gameState: 'unknown', uptimeSeconds: null, lastSaveAt: null },
+      players: snapshot.players,
+      sharedFactory: snapshot.sharedFactory,
+      sharedFluids: snapshot.sharedFluids ?? [],
+      surfaces: (snapshot.surfaces ?? []).map((surface) => ({ ...surface, itemQualities: surface.itemQualities ?? [] })),
+      research: snapshot.research ?? [],
+      platforms: snapshot.platforms ?? [],
+      logisticNetworks: snapshot.logisticNetworks ?? [],
+      probes: snapshot.probes ?? [],
+      events: snapshot.events ?? [],
+      eventCursor: snapshot.eventCursor
+    };
   } catch { return null; }
 }
 
 function unavailableSnapshot(): FactorySnapshot {
   return {
     contractVersion: 2,
+    capabilities: [],
+    instanceId: null,
+    generatedAtTick: null,
     generatedAt: timestamp(),
     server: { online: false, version: null, gameState: 'unknown', uptimeSeconds: null, lastSaveAt: null },
     players: [],
     sharedFactory: [],
+    sharedFluids: [],
+    surfaces: [],
+    research: [],
+    platforms: [],
+    logisticNetworks: [],
+    probes: [],
     events: []
   };
+}
+
+function operationsState(db: AppDatabase, snapshot: FactorySnapshot): OperationsResponse {
+  const consumedByForce = new Map<string, Map<string, number>>();
+  for (const surface of snapshot.surfaces) {
+    const force = consumedByForce.get(surface.forceName) ?? new Map<string, number>();
+    for (const item of surface.items) force.set(item.item, (force.get(item.item) ?? 0) + Math.max(0, item.consumptionRate));
+    consumedByForce.set(surface.forceName, force);
+  }
+  const research = snapshot.research.map((entry) => {
+    const consumed = consumedByForce.get(entry.forceName) ?? new Map<string, number>();
+    const ingredients = Array.isArray(entry.current?.ingredients) ? entry.current.ingredients : [];
+    const ingredientRates = ingredients.map((ingredient) => {
+      const amount = Math.max(1, ingredient.amount);
+      return (consumed.get(ingredient.item) ?? 0) / amount;
+    }) ?? [];
+    const scienceRate = ingredientRates.length ? Math.min(...ingredientRates) : 0;
+    const remainingUnits = entry.current ? Math.max(0, entry.current.unitCount * (1 - entry.current.progress)) : 0;
+    return {
+      ...entry,
+      current: entry.current ? { ...entry.current, ingredients } : null,
+      scienceRate,
+      etaSeconds: entry.current && scienceRate > 0 ? Math.ceil(remainingUnits / scienceRate * 60) : null
+    };
+  });
+  const stockRules = db.prepare('SELECT id,surface_name,item,minimum_amount FROM logistic_stock_rules ORDER BY surface_name,item').all() as Array<{ id: string; surface_name: string | null; item: string; minimum_amount: number }>;
+  const profiles = db.prepare('SELECT id,display_name,factorio_name,color FROM users ORDER BY display_name').all() as Array<{ id: string; display_name: string; factorio_name: string; color: string }>;
+  const preferenceRows = db.prepare('SELECT entity_type,entity_key,owner_user_id,icon,accent_color,sort_order FROM operation_preferences ORDER BY entity_type,sort_order,entity_key').all() as Array<{ entity_type: OperationPreference['entityType']; entity_key: string; owner_user_id: string | null; icon: OperationPreference['icon']; accent_color: string; sort_order: number }>;
+  const energyRows = db.prepare(`SELECT collected_at,scope_key,production_watts,consumption_watts FROM telemetry_surface_samples
+    WHERE collected_at >= ? AND power_available=1 ORDER BY collected_at DESC LIMIT 3000`).all(new Date(Date.now() - 6 * 60 * 60 * 1_000).toISOString()) as Array<{ collected_at: string; scope_key: string; production_watts: number; consumption_watts: number }>;
+  const energyHistory = new Map<string, Array<{ at: string; productionWatts: number; consumptionWatts: number }>>();
+  for (const row of energyRows.reverse()) {
+    const points = energyHistory.get(row.scope_key) ?? [];
+    points.push({ at: row.collected_at, productionWatts: row.production_watts, consumptionWatts: row.consumption_watts });
+    energyHistory.set(row.scope_key, points);
+  }
+  return {
+    generatedAt: snapshot.generatedAt,
+    capabilities: snapshot.capabilities,
+    instanceId: snapshot.instanceId,
+    surfaces: snapshot.surfaces.map((surface) => ({
+      ...surface,
+      players: snapshot.players.filter((player) => player.online && player.surfaceName === surface.surfaceName && (!player.forceName || player.forceName === surface.forceName)).map((player) => player.factorioName)
+    })),
+    research,
+    platforms: snapshot.platforms,
+    logisticNetworks: snapshot.logisticNetworks.map((network) => {
+      const contents = new Map(network.contents.map((item) => [`${item.item}:${item.quality ?? 'normal'}`, item.count]));
+      const shortages = stockRules.filter((rule) => !rule.surface_name || rule.surface_name === network.surfaceName).flatMap((rule) => {
+        const currentAmount = contents.get(`${rule.item}:normal`) ?? 0;
+        return currentAmount < rule.minimum_amount ? [{ ruleId: rule.id, item: rule.item, minimumAmount: rule.minimum_amount, currentAmount }] : [];
+      });
+      return { ...network, shortages };
+    }),
+    probes: snapshot.probes,
+    profiles: profiles.map((profile) => ({ id: profile.id, displayName: profile.display_name, factorioName: profile.factorio_name, color: profile.color })),
+    preferences: preferenceRows.map((preference) => ({ entityType: preference.entity_type, entityKey: preference.entity_key, ownerUserId: preference.owner_user_id, icon: preference.icon, accentColor: preference.accent_color, sortOrder: preference.sort_order })),
+    energyHistory: [...energyHistory].map(([surfaceKey, points]) => ({ surfaceKey, points }))
+  };
+}
+
+function processGameTaskEvent(db: AppDatabase, event: FactorySnapshot['events'][number], at: string) {
+  if (event.type !== 'task.create-requested' && event.type !== 'task.complete-requested') return null;
+  const playerName = event.playerName;
+  if (!playerName) return '[HAL] Příkaz nemá přiřazeného hráče.';
+  const user = db.prepare('SELECT id,display_name FROM users WHERE factorio_name=?').get(playerName) as { id: string; display_name: string } | undefined;
+  if (!user) return `[HAL] Hráč ${playerName} není propojený s účtem v aplikaci.`;
+
+  if (event.type === 'task.create-requested') {
+    const title = typeof event.detail?.title === 'string' ? event.detail.title.trim().slice(0, 180) : '';
+    if (!title) return `[HAL] ${playerName}: prázdný úkol nebyl vytvořen.`;
+    const surface = typeof event.detail?.surface === 'string' ? event.detail.surface.slice(0, 60) : null;
+    const x = typeof event.detail?.x === 'number' && Number.isFinite(event.detail.x) ? Math.round(event.detail.x * 10) / 10 : null;
+    const y = typeof event.detail?.y === 'number' && Number.isFinite(event.detail.y) ? Math.round(event.detail.y * 10) / 10 : null;
+    const location = surface && x !== null && y !== null ? `[gps=${x},${y},${surface}]` : surface;
+    const id = randomUUID();
+    db.prepare(`INSERT INTO tasks(id,title,description,status,priority,location,blueprint_string,due_at,is_pinned,is_archived,position,created_by,created_at,updated_at)
+      VALUES(?,?,?,'Next',2,?,?,NULL,0,0,0,?,?,?)`).run(id, title, 'Vytvořeno příkazem /hal-task ve hře.', location, null, user.id, at, at);
+    db.prepare('INSERT INTO task_assignees(task_id,user_id) VALUES(?,?)').run(id, user.id);
+    db.prepare('INSERT INTO task_tags(task_id,tag) VALUES(?,?)').run(id, 'hra');
+    db.prepare('INSERT INTO task_history(id,task_id,user_id,action,detail_json,created_at) VALUES(?,?,?,?,?,?)')
+      .run(randomUUID(), id, user.id, 'created.from-game', JSON.stringify({ eventId: event.id, location }), at);
+    recordActivity(db, 'task.created.from-game', user.id, { taskId: id, title, code: id.slice(0, 6).toUpperCase(), message: `Úkol ${id.slice(0, 6).toUpperCase()} vytvořen ze hry: ${title}` });
+    return `[HAL] Úkol ${id.slice(0, 6).toUpperCase()} vytvořen: ${title}`;
+  }
+
+  const code = typeof event.detail?.code === 'string' ? event.detail.code.toUpperCase().replace(/[^A-F0-9]/g, '').slice(0, 12) : '';
+  if (code.length < 4) return `[HAL] ${playerName}: neplatný kód úkolu.`;
+  const matches = db.prepare("SELECT id,title,status FROM tasks WHERE upper(id) LIKE ? ORDER BY created_at DESC LIMIT 2").all(`${code}%`) as Array<{ id: string; title: string; status: 'Now' | 'Next' | 'Later' | 'Done' }>;
+  if (matches.length === 0) return `[HAL] Úkol ${code} nebyl nalezen.`;
+  if (matches.length > 1) return `[HAL] Kód ${code} není jednoznačný; použij delší kód.`;
+  const task = matches[0];
+  if (task.status === 'Done') return `[HAL] Úkol ${code} už je hotový.`;
+  db.prepare("UPDATE tasks SET status='Done',updated_at=? WHERE id=?").run(at, task.id);
+  db.prepare('INSERT INTO task_history(id,task_id,user_id,action,detail_json,created_at) VALUES(?,?,?,?,?,?)')
+    .run(randomUUID(), task.id, user.id, 'completed.from-game', JSON.stringify({ eventId: event.id, from: task.status }), at);
+  recordActivity(db, 'task.completed.from-game', user.id, { taskId: task.id, title: task.title, code, message: `Úkol ${code} dokončen ve hře: ${task.title}` });
+  return `[HAL] Úkol ${code} označen jako hotový: ${task.title}`;
 }
 
 class TelemetryPoller {
@@ -256,18 +388,32 @@ class TelemetryPoller {
     try {
       const previousCursor = this.db.prepare('SELECT cursor FROM telemetry_cursors WHERE source=?').get('hal-telemetry') as { cursor: string } | undefined;
       const snapshot = await this.adapter.getSnapshot(previousCursor?.cursor);
+      const previousSnapshot = this.latestSnapshot;
       this.latestSnapshot = snapshot;
       const collectedAt = timestamp();
       this.db.prepare('INSERT INTO telemetry_snapshots(id,scope_type,scope_key,contract_version,collected_at,payload) VALUES(?,?,?,?,?,?)')
         .run(randomUUID(), 'shared', 'main', snapshot.contractVersion, collectedAt, gzipSync(JSON.stringify(snapshot)));
+      persistTelemetryMetrics(this.db, snapshot, previousSnapshot?.instanceId === snapshot.instanceId ? previousSnapshot : null, collectedAt);
       const insertEvent = this.db.prepare(`INSERT OR IGNORE INTO activity_events(id,source,event_type,external_event_id,payload_json,occurred_at,created_at)
         VALUES(?,?,?,?,?,?,?)`);
+      const gameReplies: string[] = [];
       const transaction = this.db.transaction(() => {
-        for (const event of snapshot.events) insertEvent.run(randomUUID(), 'telemetry', event.type, event.id, JSON.stringify(event), event.occurredAt, collectedAt);
+        for (const event of snapshot.events) {
+          const inserted = insertEvent.run(randomUUID(), 'telemetry', event.type, event.id, JSON.stringify(event), event.occurredAt, collectedAt);
+          if (inserted.changes) {
+            const response = processGameTaskEvent(this.db, event, collectedAt);
+            if (response) gameReplies.push(response);
+          }
+        }
         if (snapshot.eventCursor) this.db.prepare(`INSERT INTO telemetry_cursors(source,cursor,updated_at) VALUES(?,?,?) ON CONFLICT(source) DO UPDATE SET cursor=excluded.cursor,updated_at=excluded.updated_at`)
           .run('hal-telemetry', snapshot.eventCursor, collectedAt);
       });
       transaction();
+      publishLive(this.db, 'telemetry.snapshot', { generatedAt: snapshot.generatedAt, events: snapshot.events.length });
+      for (const message of gameReplies) {
+        try { await this.adapter.sendMessage(message); }
+        catch (error) { requestLog('game task acknowledgement failed', error); }
+      }
       const completedGoals = advanceProductionGoals(this.db, snapshot, collectedAt);
       for (const goal of completedGoals) {
         const label = await czechPrototypeLabel(goal.item);
@@ -289,7 +435,7 @@ class TelemetryPoller {
           requestLog('goal announcement failed', error);
         }
       }
-      // Retention: raw per-minute samples for 48 hours. Downsampling is added before longer retention is enabled.
+      // Raw per-minute samples stay compact; hourly and daily rollups retain the long-term history.
       this.db.prepare("DELETE FROM telemetry_snapshots WHERE collected_at < datetime('now', '-48 hours')").run();
     } catch (error) {
       requestLog('telemetry poll failed', error);
@@ -308,6 +454,8 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
   const app = Fastify({ logger: false, trustProxy: config.NODE_ENV === 'production' });
   const poller = new TelemetryPoller(db, adapter);
   const logTailer = new FactorioLogTailer(db, config.FACTORIO_LOG_PATH);
+  const liveBroker = new LiveEventBroker();
+  registerLiveBroker(db, liveBroker);
 
   void app.register(cookie);
   void app.register(rateLimit, { global: false });
@@ -322,6 +470,22 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
   });
 
   app.get('/health', async () => ({ status: 'ok', mode: config.FACTORY_MODE }));
+
+  app.get('/api/events/stream', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no'
+    });
+    reply.raw.write('retry: 3000\nevent: ready\ndata: {}\n\n');
+    const unsubscribe = liveBroker.subscribe((update) => reply.raw.write(formatSseEvent(update)));
+    const heartbeat = setInterval(() => reply.raw.write(': heartbeat\n\n'), 25_000);
+    request.raw.on('close', () => { clearInterval(heartbeat); unsubscribe(); });
+    return reply;
+  });
 
   app.post('/api/auth/login', { config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } }, async (request, reply) => {
     const body = z.object({ login: z.string().trim().min(1).max(80), password: z.string().min(1).max(1024) }).safeParse(request.body);
@@ -363,6 +527,75 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     const tasks = db.prepare("SELECT id,title,status,priority,location FROM tasks WHERE status != 'Done' ORDER BY priority DESC, updated_at DESC LIMIT 5").all();
     const activity = db.prepare('SELECT event_type,payload_json,occurred_at FROM activity_events ORDER BY occurred_at DESC LIMIT 12').all();
     return { snapshot, tasks, activity, appUptimeSeconds: Math.floor(process.uptime()) };
+  });
+
+  app.get('/api/operations', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    return operationsState(db, poller.latest());
+  });
+
+  app.put('/api/operations/preferences/:entityType/:entityKey', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const params = z.object({
+      entityType: z.enum(['surface', 'platform', 'logistic-network']),
+      entityKey: z.string().trim().min(1).max(220)
+    }).safeParse(request.params);
+    const body = z.object({
+      ownerUserId: z.string().uuid().nullable(),
+      icon: z.enum(['factory', 'planet', 'rocket', 'power', 'logistics', 'star', 'shield', 'train']),
+      accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+      sortOrder: z.number().int().min(-10_000).max(10_000)
+    }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'Invalid operation preference.' });
+    if (body.data.ownerUserId && !db.prepare('SELECT 1 FROM users WHERE id=?').get(body.data.ownerUserId)) return reply.code(400).send({ error: 'Unknown owner.' });
+    db.prepare(`INSERT INTO operation_preferences(entity_type,entity_key,owner_user_id,icon,accent_color,sort_order,updated_by,updated_at)
+      VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(entity_type,entity_key) DO UPDATE SET
+      owner_user_id=excluded.owner_user_id,icon=excluded.icon,accent_color=excluded.accent_color,
+      sort_order=excluded.sort_order,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
+      .run(params.data.entityType, params.data.entityKey, body.data.ownerUserId, body.data.icon, body.data.accentColor.toLowerCase(), body.data.sortOrder, user.id, timestamp());
+    recordActivity(db, 'operations.preference.updated', user.id, { entityType: params.data.entityType, entityKey: params.data.entityKey });
+    return reply.code(204).send();
+  });
+
+  app.get('/api/logistics/rules', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    return db.prepare(`SELECT r.id,r.surface_name AS surfaceName,r.item,r.minimum_amount AS minimumAmount,
+      r.created_at AS createdAt,u.display_name AS createdByName FROM logistic_stock_rules r JOIN users u ON u.id=r.created_by
+      ORDER BY r.surface_name,r.item`).all();
+  });
+
+  app.post('/api/logistics/rules', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const body = z.object({
+      surfaceName: z.string().trim().min(1).max(100).nullable().optional(),
+      item: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/),
+      minimumAmount: z.number().finite().min(0).max(1_000_000_000_000)
+    }).safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: 'Invalid logistic stock rule.' });
+    const id = randomUUID(); const now = timestamp();
+    db.prepare('INSERT INTO logistic_stock_rules(id,surface_name,item,minimum_amount,created_by,created_at) VALUES(?,?,?,?,?,?)')
+      .run(id, body.data.surfaceName ?? null, body.data.item, body.data.minimumAmount, user.id, now);
+    recordActivity(db, 'logistics.rule.created', user.id, { ruleId: id, item: body.data.item, surfaceName: body.data.surfaceName ?? null });
+    return reply.code(201).send({ id });
+  });
+
+  app.delete('/api/logistics/rules/:id', async (request, reply) => {
+    const user = requireUser(db, request, reply); if (!user) return;
+    const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Invalid logistic rule id.' });
+    const rule = db.prepare('SELECT item,surface_name FROM logistic_stock_rules WHERE id=?').get(params.data.id) as { item: string; surface_name: string | null } | undefined;
+    if (!rule) return reply.code(404).send({ error: 'Logistic stock rule not found.' });
+    db.prepare('DELETE FROM logistic_stock_rules WHERE id=?').run(params.data.id);
+    recordActivity(db, 'logistics.rule.deleted', user.id, { ruleId: params.data.id, item: rule.item, surfaceName: rule.surface_name });
+    return reply.code(204).send();
+  });
+
+  app.post('/api/blueprints/inspect', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    const body = z.object({ blueprintString: z.string().min(2).max(100_000) }).safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: 'Invalid blueprint request.' });
+    try { return inspectBlueprintString(body.data.blueprintString); }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Blueprint se nepodařilo načíst.' }); }
   });
 
   app.get('/api/tasks', async (request, reply) => {
@@ -504,6 +737,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       db.prepare('UPDATE task_checklist_items SET is_done=? WHERE id=?').run(body.data.isDone ? 1 : 0, params.data.itemId);
       db.prepare('INSERT INTO task_history(id,task_id,user_id,action,detail_json,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(), params.data.taskId, user.id, 'checklist.toggled', JSON.stringify({ text: item.text, isDone: body.data.isDone }), now);
     })();
+    publishLive(db, 'task.checklist.toggled', { taskId: params.data.taskId, itemId: params.data.itemId });
     return { ok: true };
   });
 
@@ -524,8 +758,8 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     const snapshot = poller.latest();
     const baseline = Math.max(0, snapshot.sharedFactory.find((item) => item.item === body.data.item)?.produced ?? 0);
     const id = randomUUID(); const now = timestamp();
-    db.prepare(`INSERT INTO production_goals(id,item,target_amount,progress_amount,last_counter,linked_task_id,created_by,status,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,'active',?,?)`).run(id, body.data.item, body.data.targetAmount, 0, baseline, body.data.linkedTaskId ?? null, user.id, now, now);
+    db.prepare(`INSERT INTO production_goals(id,item,target_amount,progress_amount,last_counter,last_instance_id,linked_task_id,created_by,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?, 'active',?,?)`).run(id, body.data.item, body.data.targetAmount, 0, baseline, snapshot.instanceId, body.data.linkedTaskId ?? null, user.id, now, now);
     recordActivity(db, 'production-goal.created', user.id, { goalId: id, item: body.data.item, targetAmount: body.data.targetAmount });
     return reply.code(201).send({ id });
   });
@@ -599,6 +833,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     const existing = db.prepare('SELECT 1 FROM message_reactions WHERE message_id=? AND user_id=? AND emoji=?').get(params.data.id, user.id, body.data.emoji);
     if (existing) db.prepare('DELETE FROM message_reactions WHERE message_id=? AND user_id=? AND emoji=?').run(params.data.id, user.id, body.data.emoji);
     else db.prepare('INSERT INTO message_reactions(message_id,user_id,emoji,created_at) VALUES(?,?,?,?)').run(params.data.id, user.id, body.data.emoji, timestamp());
+    publishLive(db, 'message.reaction', { messageId: params.data.id });
     return { active: !existing };
   });
 
@@ -662,7 +897,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     const query = z.object({ hours: z.coerce.number().int().refine((value) => [4, 8, 12, 24].includes(value)).default(8) }).safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: 'Invalid shift length.' });
     const since = new Date(Date.now() - query.data.hours * 3_600_000).toISOString();
-    const rows = db.prepare("SELECT collected_at,payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version=2 AND collected_at>=? ORDER BY collected_at").all(since) as Array<{ collected_at: string; payload: Buffer }>;
+    const rows = db.prepare("SELECT collected_at,payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version IN (2,3) AND collected_at>=? ORDER BY collected_at").all(since) as Array<{ collected_at: string; payload: Buffer }>;
     const snapshots = rows.flatMap((row) => {
       try {
         const snapshot = JSON.parse(gunzipSync(row.payload).toString('utf8')) as FactorySnapshot;
@@ -691,39 +926,57 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
   app.get('/api/production', async (request, reply) => {
     if (!requireUser(db, request, reply)) return;
     const query = z.object({
-      range: z.enum(['1m', '15m', '1h', '6h', '24h']).default('1h'),
+      range: z.enum(['1m', '15m', '1h', '6h', '24h', '7d', '30d', '1y']).default('1h'),
+      kind: z.enum(['item', 'fluid']).default('item'),
       item: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/).optional(),
       items: z.string().max(320).optional()
     }).safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: 'Invalid production range.' });
+    const kind = query.data.kind as FlowKind;
+    const range = query.data.range as ProductionRange;
     const comparisonItems = [...new Set((query.data.items?.split(',') ?? (query.data.item ? [query.data.item] : [])).filter((item) => /^[a-z0-9][a-z0-9_-]*$/.test(item)))].slice(0, 4);
-    const minutesByRange = { '1m': 1, '15m': 15, '1h': 60, '6h': 360, '24h': 1440 } as const;
-    const minutes = minutesByRange[query.data.range];
+    const minutesByRange: Record<ProductionRange, number> = { '1m': 1, '15m': 15, '1h': 60, '6h': 360, '24h': 1440, '7d': 10_080, '30d': 43_200, '1y': 525_600 };
+    const minutes = minutesByRange[range];
     if (config.FACTORY_MODE === 'mock') {
       const snapshot = await adapter.getSnapshot();
-      const pointCount = query.data.range === '1m' ? 12 : query.data.range === '24h' ? 24 : query.data.range === '6h' ? 36 : 30;
+      const source = kind === 'item' ? snapshot.sharedFactory : snapshot.sharedFluids;
+      const pointCount = range === '1m' ? 12 : range === '1y' ? 52 : range === '30d' ? 60 : range === '7d' ? 56 : range === '24h' ? 24 : range === '6h' ? 36 : 30;
       const stepMinutes = minutes / pointCount;
       const buildMockPoints = (selectedItem?: string) => Array.from({ length: pointCount }, (_, index) => {
         const wave = 0.83 + Math.sin(index / 3.2) * 0.13 + Math.cos(index / 7) * 0.04;
-        const selectedCounter = selectedItem ? snapshot.sharedFactory.find((entry) => entry.item === selectedItem) : undefined;
-        const productionRate = selectedItem ? selectedCounter?.productionRate ?? 0 : snapshot.sharedFactory.reduce((sum, item) => sum + item.productionRate, 0);
-        const consumptionRate = selectedItem ? selectedCounter?.consumptionRate ?? 0 : snapshot.sharedFactory.reduce((sum, item) => sum + item.consumptionRate, 0);
+        const selectedCounter = selectedItem ? source.find((entry) => entry.item === selectedItem) : undefined;
+        const productionRate = selectedItem ? selectedCounter?.productionRate ?? 0 : source.reduce((sum, item) => sum + item.productionRate, 0);
+        const consumptionRate = selectedItem ? selectedCounter?.consumptionRate ?? 0 : source.reduce((sum, item) => sum + item.consumptionRate, 0);
         return { at: new Date(Date.now() - (pointCount - index - 1) * stepMinutes * 60_000).toISOString(), productionRate: Math.round(productionRate * wave), consumptionRate: Math.round(consumptionRate * wave) };
       });
       const points = buildMockPoints(comparisonItems.length === 1 ? comparisonItems[0] : undefined);
-      const topProduced = [...snapshot.sharedFactory].sort((a, b) => b.productionRate - a.productionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.productionRate, rate: item.productionRate }));
-      const topConsumed = [...snapshot.sharedFactory].sort((a, b) => b.consumptionRate - a.consumptionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.consumptionRate, rate: item.consumptionRate }));
-      const availableItems = [...snapshot.sharedFactory].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate)).map((item) => item.item);
-      const catalog = [...snapshot.sharedFactory].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate));
+      const topProduced = [...source].sort((a, b) => b.productionRate - a.productionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.productionRate * minutes, rate: item.productionRate }));
+      const topConsumed = [...source].sort((a, b) => b.consumptionRate - a.consumptionRate).slice(0, 10).map((item) => ({ item: item.item, amount: item.consumptionRate * minutes, rate: item.consumptionRate }));
+      const availableItems = [...source].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate)).map((item) => item.item);
+      const catalog = [...source].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate));
       const comparison = comparisonItems.map((item) => ({ item, points: buildMockPoints(item) }));
-      return { range: query.data.range, points, comparison, topProduced, topConsumed, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null, sampleCount: pointCount, basis: 'current', lastUpdatedAt: snapshot.generatedAt };
+      return { range, kind, points, comparison, topProduced, topConsumed, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null, sampleCount: pointCount, basis: minutes > 1 ? 'interval' : 'current', lastUpdatedAt: snapshot.generatedAt };
     }
+
     const cutoff = new Date(Date.now() - minutes * 60_000).toISOString();
-    const rows = db.prepare("SELECT collected_at,payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version=2 AND collected_at>=? ORDER BY collected_at").all(cutoff) as Array<{ collected_at: string; payload: Buffer }>;
+    if (minutes > 1_440) {
+      const bucketSeconds: 3600 | 86400 = range === '1y' ? 86400 : 3600;
+      const rollups = listFlowRollups(db, kind, cutoff, bucketSeconds);
+      const summary = summarizeProductionRollups(rollups);
+      const latestSnapshot = poller.latest();
+      const source = kind === 'item' ? latestSnapshot.sharedFactory : latestSnapshot.sharedFluids;
+      const availableItems = [...source].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate)).map((item) => item.item);
+      const catalog = [...source].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate));
+      const points = comparisonItems.length === 1 ? summarizeProductionRollups(rollups.filter((entry) => entry.item === comparisonItems[0])).points : summary.points;
+      const comparison = comparisonItems.map((item) => ({ item, points: summarizeProductionRollups(rollups.filter((entry) => entry.item === item)).points }));
+      return { range, kind, ...summary, points, comparison, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null };
+    }
+
+    const rows = db.prepare("SELECT collected_at,payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version IN (2,3) AND collected_at>=? ORDER BY collected_at").all(cutoff) as Array<{ collected_at: string; payload: Buffer }>;
     const snapshots = rows.flatMap((row) => {
       try {
-        const snapshot = JSON.parse(gunzipSync(row.payload).toString('utf8')) as { sharedFactory: import('./factory-adapter.js').ProductionCounter[] };
-        return [{ collectedAt: row.collected_at, sharedFactory: snapshot.sharedFactory }];
+        const snapshot = JSON.parse(gunzipSync(row.payload).toString('utf8')) as Pick<FactorySnapshot, 'sharedFactory'> & Partial<Pick<FactorySnapshot, 'sharedFluids'>>;
+        return [{ collectedAt: row.collected_at, sharedFactory: kind === 'item' ? snapshot.sharedFactory : snapshot.sharedFluids ?? [] }];
       }
       catch { return []; }
     });
@@ -740,7 +993,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       item: selectedItem,
       points: summarizeProduction(snapshots.map((snapshot) => ({ ...snapshot, sharedFactory: snapshot.sharedFactory.filter((item) => item.item === selectedItem) }))).points
     }));
-    return { range: query.data.range, ...summary, points, comparison, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null };
+    return { range, kind, ...summary, points, comparison, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null };
   });
 
   app.get('/api/icons/:prototype', async (request, reply) => {
@@ -840,9 +1093,11 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     app.setNotFoundHandler((request, reply) => request.url.startsWith('/api/') ? reply.code(404).send({ error: 'Not found.' }) : reply.sendFile('index.html'));
   }
   app.addHook('onReady', async () => { await poller.start(); logTailer.start(); });
-  app.addHook('onClose', () => { poller.stop(); logTailer.stop(); db.close(); });
+  app.addHook('onClose', () => { poller.stop(); logTailer.stop(); unregisterLiveBroker(db); db.close(); });
   return app;
 }
 
-const app = buildApp();
-app.listen({ host: '0.0.0.0', port: config.APP_PORT }).catch((error) => { requestLog('startup failed', error); process.exit(1); });
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const app = buildApp();
+  app.listen({ host: '0.0.0.0', port: config.APP_PORT }).catch((error) => { requestLog('startup failed', error); process.exit(1); });
+}

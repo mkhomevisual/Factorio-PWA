@@ -3,8 +3,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
 RUN npm ci
 COPY apps ./apps
+COPY packages ./packages
 COPY assets ./assets
 COPY mods ./mods
 COPY scripts ./scripts
@@ -18,9 +20,11 @@ RUN groupadd --system hal && useradd --system --gid hal --create-home hal
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
 RUN npm ci --omit=dev --workspace=@hal/api && npm cache clean --force
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/web/dist ./apps/web/dist
+COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=build /app/assets ./assets
 COPY --from=build /app/downloads ./downloads
 RUN mkdir -p /app/data && chown -R hal:hal /app

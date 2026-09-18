@@ -11,6 +11,7 @@
     "icons:import": "node dist/import-icons.js"
   },
   "dependencies": {
+    "@hal/contracts": "0.1.0",
     "@fastify/cookie": "^11.0.2",
     "@fastify/rate-limit": "^10.2.1",
     "@fastify/static": "^10.1.3",

@@ -127,12 +127,66 @@ export function openDatabase(path: string): AppDatabase {
       payload BLOB NOT NULL
     );
     CREATE INDEX IF NOT EXISTS telemetry_snapshots_scope_time ON telemetry_snapshots(scope_type, scope_key, collected_at DESC);
+    CREATE TABLE IF NOT EXISTS telemetry_flow_rollups (
+      bucket_start TEXT NOT NULL,
+      bucket_seconds INTEGER NOT NULL CHECK(bucket_seconds IN (3600, 86400)),
+      flow_kind TEXT NOT NULL CHECK(flow_kind IN ('item', 'fluid')),
+      prototype TEXT NOT NULL,
+      produced_amount REAL NOT NULL DEFAULT 0,
+      consumed_amount REAL NOT NULL DEFAULT 0,
+      production_rate_sum REAL NOT NULL DEFAULT 0,
+      consumption_rate_sum REAL NOT NULL DEFAULT 0,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(bucket_start, bucket_seconds, flow_kind, prototype)
+    );
+    CREATE INDEX IF NOT EXISTS telemetry_flow_rollups_lookup ON telemetry_flow_rollups(flow_kind, bucket_seconds, bucket_start);
+    CREATE TABLE IF NOT EXISTS telemetry_surface_samples (
+      id TEXT PRIMARY KEY,
+      collected_at TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      force_name TEXT NOT NULL,
+      surface_name TEXT NOT NULL,
+      surface_kind TEXT NOT NULL,
+      planet_name TEXT,
+      platform_id TEXT,
+      pollution REAL,
+      evolution_factor REAL,
+      power_available INTEGER NOT NULL,
+      network_count INTEGER NOT NULL,
+      production_watts REAL NOT NULL,
+      consumption_watts REAL NOT NULL,
+      accumulator_charge_joules REAL NOT NULL,
+      accumulator_capacity_joules REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS telemetry_surface_samples_lookup ON telemetry_surface_samples(scope_key, collected_at DESC);
+    CREATE TABLE IF NOT EXISTS logistic_stock_rules (
+      id TEXT PRIMARY KEY,
+      surface_name TEXT,
+      item TEXT NOT NULL,
+      minimum_amount REAL NOT NULL CHECK(minimum_amount >= 0),
+      created_by TEXT NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS logistic_stock_rules_surface ON logistic_stock_rules(surface_name, item);
+    CREATE TABLE IF NOT EXISTS operation_preferences (
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('surface', 'platform', 'logistic-network')),
+      entity_key TEXT NOT NULL,
+      owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      icon TEXT NOT NULL DEFAULT 'factory',
+      accent_color TEXT NOT NULL DEFAULT '#e69636',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      updated_by TEXT NOT NULL REFERENCES users(id),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(entity_type, entity_key)
+    );
+    CREATE INDEX IF NOT EXISTS operation_preferences_owner ON operation_preferences(owner_user_id, entity_type, sort_order);
     CREATE TABLE IF NOT EXISTS production_goals (
       id TEXT PRIMARY KEY,
       item TEXT NOT NULL,
       target_amount REAL NOT NULL CHECK(target_amount > 0),
       progress_amount REAL NOT NULL DEFAULT 0,
       last_counter REAL NOT NULL DEFAULT 0,
+      last_instance_id TEXT,
       linked_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
       created_by TEXT NOT NULL REFERENCES users(id),
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'completed')),
@@ -157,6 +211,8 @@ export function openDatabase(path: string): AppDatabase {
   if (!taskColumns.has('is_pinned')) db.exec('ALTER TABLE tasks ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0');
   if (!taskColumns.has('is_archived')) db.exec('ALTER TABLE tasks ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0');
   if (!taskColumns.has('position')) db.exec('ALTER TABLE tasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
+  const productionGoalColumns = columns('production_goals');
+  if (!productionGoalColumns.has('last_instance_id')) db.exec('ALTER TABLE production_goals ADD COLUMN last_instance_id TEXT');
   const messageColumns = columns('messages');
   if (!messageColumns.has('updated_at')) db.exec('ALTER TABLE messages ADD COLUMN updated_at TEXT');
   if (!messageColumns.has('is_pinned')) db.exec('ALTER TABLE messages ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0');

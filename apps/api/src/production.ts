@@ -1,4 +1,5 @@
 import type { ProductionCounter } from './factory-adapter.js';
+import type { StoredFlowRollup } from './telemetry-storage.js';
 
 export type StoredProductionSnapshot = {
   collectedAt: string;
@@ -56,5 +57,46 @@ export function summarizeProduction(snapshots: StoredProductionSnapshot[]) {
     sampleCount: snapshots.length,
     basis: hasInterval ? 'interval' as const : 'current' as const,
     lastUpdatedAt: latest.collectedAt
+  };
+}
+
+export function summarizeProductionRollups(rollups: StoredFlowRollup[]) {
+  const byTime = new Map<string, { at: string; productionRate: number; consumptionRate: number }>();
+  const byItem = new Map<string, ProductionItemSummary>();
+  for (const entry of rollups) {
+    const point = byTime.get(entry.bucketStart) ?? { at: entry.bucketStart, productionRate: 0, consumptionRate: 0 };
+    point.productionRate += Math.max(0, entry.productionRate);
+    point.consumptionRate += Math.max(0, entry.consumptionRate);
+    byTime.set(entry.bucketStart, point);
+
+    const item = byItem.get(entry.item) ?? { item: entry.item, amount: 0, rate: 0 };
+    item.amount += Math.max(0, entry.producedAmount);
+    item.rate = Math.max(0, entry.productionRate);
+    byItem.set(entry.item, item);
+  }
+  const points = downsample([...byTime.values()].sort((left, right) => left.at.localeCompare(right.at)).map((point) => ({
+    ...point,
+    productionRate: Math.round(point.productionRate),
+    consumptionRate: Math.round(point.consumptionRate)
+  })));
+  const topProduced = [...byItem.values()].filter((item) => item.amount > 0 || item.rate > 0)
+    .sort((left, right) => right.amount - left.amount || right.rate - left.rate).slice(0, 10);
+
+  const consumedByItem = new Map<string, ProductionItemSummary>();
+  for (const entry of rollups) {
+    const item = consumedByItem.get(entry.item) ?? { item: entry.item, amount: 0, rate: 0 };
+    item.amount += Math.max(0, entry.consumedAmount);
+    item.rate = Math.max(0, entry.consumptionRate);
+    consumedByItem.set(entry.item, item);
+  }
+  const topConsumed = [...consumedByItem.values()].filter((item) => item.amount > 0 || item.rate > 0)
+    .sort((left, right) => right.amount - left.amount || right.rate - left.rate).slice(0, 10);
+  return {
+    points,
+    topProduced,
+    topConsumed,
+    sampleCount: new Set(rollups.map((entry) => entry.bucketStart)).size,
+    basis: rollups.length ? 'interval' as const : 'empty' as const,
+    lastUpdatedAt: points.at(-1)?.at ?? null
   };
 }

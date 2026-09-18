@@ -1,9 +1,9 @@
 {
   "name": "hal-telemetry",
-  "version": "0.2.1",
+  "version": "0.5.2",
   "title": "HAL telemetry",
   "author": "HAL Factory Control",
   "factorio_version": "2.0",
   "dependencies": ["base >= 2.0"],
-  "description": "Read-only telemetry bridge for HAL Factory Control. It does not change gameplay."
+  "description": "Telemetry bridge for HAL Factory Control with per-surface production, logistics, probes, research, platforms, power and in-game task commands."
 }

@@ -14,6 +14,7 @@ test('adds workspace columns and collaboration tables to an existing database', 
     CREATE TABLE users (id TEXT PRIMARY KEY, login TEXT, display_name TEXT, factorio_name TEXT, color TEXT, password_hash TEXT, created_at TEXT, last_online_at TEXT);
     CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, description TEXT, status TEXT, priority INTEGER, location TEXT, blueprint_string TEXT, created_by TEXT, created_at TEXT, updated_at TEXT);
     CREATE TABLE messages (id TEXT PRIMARY KEY, user_id TEXT, body TEXT, created_at TEXT);
+    CREATE TABLE production_goals (id TEXT PRIMARY KEY, item TEXT, target_amount REAL, progress_amount REAL, last_counter REAL, linked_task_id TEXT, created_by TEXT, status TEXT, created_at TEXT, updated_at TEXT, completed_at TEXT, announced_at TEXT);
   `);
   legacy.close();
 
@@ -28,6 +29,9 @@ test('adds workspace columns and collaboration tables to an existing database', 
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_reactions'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_reads'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='production_goals'").get());
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='logistic_stock_rules'").get());
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operation_preferences'").get());
+  assert.ok((db.prepare('PRAGMA table_info(production_goals)').all() as Array<{ name: string }>).some((column) => column.name === 'last_instance_id'));
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='achievement_unlocks'").get());
   db.close();
   rmSync(directory, { recursive: true, force: true });

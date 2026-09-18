@@ -17,12 +17,13 @@ test('advances a goal by produced counter deltas and completes exactly once', ()
   const db = openDatabase(join(directory, 'goals.db'));
   const now = new Date().toISOString();
   db.prepare('INSERT INTO users(id,login,display_name,factorio_name,password_hash,created_at) VALUES(?,?,?,?,?,?)').run('user-1', 'markan', 'Martin', 'MarkanMegaBuilder', 'hash', now);
-  db.prepare(`INSERT INTO production_goals(id,item,target_amount,progress_amount,last_counter,created_by,status,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,'active',?,?)`).run('goal-1', 'speed-module', 100, 0, 1_000, 'user-1', now, now);
+  db.prepare(`INSERT INTO production_goals(id,item,target_amount,progress_amount,last_counter,last_instance_id,created_by,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,'active',?,?)`).run('goal-1', 'speed-module', 100, 0, 1_000, 'test', 'user-1', now, now);
   const snapshot = (produced: number): FactorySnapshot => ({
-    contractVersion: 2, generatedAt: now,
+    contractVersion: 3, capabilities: ['item-flow'], instanceId: 'test', generatedAtTick: 1, generatedAt: now,
     server: { online: true, version: '2.0', gameState: 'running', uptimeSeconds: 1, lastSaveAt: null }, players: [], events: [],
-    sharedFactory: [{ item: 'speed-module', produced, consumed: 0, productionRate: 20, consumptionRate: 0 }]
+    sharedFactory: [{ item: 'speed-module', produced, consumed: 0, productionRate: 20, consumptionRate: 0 }],
+    sharedFluids: [], surfaces: [], research: [], platforms: [], logisticNetworks: [], probes: []
   });
   assert.equal(advanceProductionGoals(db, snapshot(1_040), now).length, 0);
   assert.equal((db.prepare('SELECT progress_amount FROM production_goals WHERE id=?').get('goal-1') as { progress_amount: number }).progress_amount, 40);
@@ -30,5 +31,24 @@ test('advances a goal by produced counter deltas and completes exactly once', ()
   assert.equal(advanceProductionGoals(db, snapshot(1_210), now).length, 0);
   const goal = db.prepare('SELECT progress_amount,status FROM production_goals WHERE id=?').get('goal-1') as { progress_amount: number; status: string };
   assert.deepEqual(goal, { progress_amount: 100, status: 'completed' });
+  db.close(); rmSync(directory, { recursive: true, force: true });
+});
+
+test('rebases an active goal when Factorio loads a different save', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hal-goals-instance-'));
+  const db = openDatabase(join(directory, 'goals.db'));
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO users(id,login,display_name,factorio_name,password_hash,created_at) VALUES(?,?,?,?,?,?)').run('user-1', 'markan', 'Martin', 'MarkanMegaBuilder', 'hash', now);
+  db.prepare(`INSERT INTO production_goals(id,item,target_amount,progress_amount,last_counter,last_instance_id,created_by,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,'active',?,?)`).run('goal-1', 'speed-module', 100, 20, 10, 'old-save', 'user-1', now, now);
+  const snapshot: FactorySnapshot = {
+    contractVersion: 3, capabilities: ['item-flow'], instanceId: 'new-save', generatedAtTick: 1, generatedAt: now,
+    server: { online: true, version: '2.0', gameState: 'running', uptimeSeconds: 1, lastSaveAt: null }, players: [], events: [],
+    sharedFactory: [{ item: 'speed-module', produced: 80, consumed: 0, productionRate: 20, consumptionRate: 0 }],
+    sharedFluids: [], surfaces: [], research: [], platforms: [], logisticNetworks: [], probes: []
+  };
+  assert.equal(advanceProductionGoals(db, snapshot, now).length, 0);
+  const goal = db.prepare('SELECT progress_amount,last_counter,last_instance_id FROM production_goals WHERE id=?').get('goal-1');
+  assert.deepEqual(goal, { progress_amount: 20, last_counter: 80, last_instance_id: 'new-save' });
   db.close(); rmSync(directory, { recursive: true, force: true });
 });

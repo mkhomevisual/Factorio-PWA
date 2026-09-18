@@ -2,11 +2,11 @@
   "name": "hal-factory-control",
   "private": true,
   "version": "0.1.0",
-  "workspaces": ["apps/*"],
+  "workspaces": ["apps/*", "packages/*"],
   "scripts": {
     "dev": "npm run dev --workspace=@hal/api",
-    "build": "npm run build --workspaces",
-    "check": "npm run check --workspaces",
+    "build": "npm run build --workspace=@hal/contracts && npm run build --workspace=@hal/web && npm run build --workspace=@hal/api",
+    "check": "npm run check --workspace=@hal/contracts && npm run check --workspace=@hal/web && npm run check --workspace=@hal/api",
     "test": "npm run test --workspaces"
   },
   "engines": { "node": ">=22" }
