@@ -9,6 +9,8 @@
     "test": "echo 'Frontend tests will be added with feature coverage.'"
   },
   "dependencies": {
+    "@fontsource-variable/space-grotesk": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
     "@hal/contracts": "0.1.0",
     "@vitejs/plugin-react": "^4.3.4",
     "react": "^18.3.1",

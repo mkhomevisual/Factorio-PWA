@@ -14,8 +14,8 @@ export default defineConfig({
         description: 'Soukromé řízení továrny HAL1000.',
         id: '/',
         lang: 'cs',
-        theme_color: '#0a100e',
-        background_color: '#0a100e',
+        theme_color: '#080a0b',
+        background_color: '#080a0b',
         display: 'standalone',
         orientation: 'any',
         icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }]
@@ -23,7 +23,17 @@ export default defineConfig({
       workbox: {
         navigateFallback: '/index.html',
         clientsClaim: true,
-        importScripts: ['/pwa-migration.js']
+        cleanupOutdatedCaches: true,
+        importScripts: ['/pwa-migration.js'],
+        runtimeCaching: [{
+          urlPattern: /\/heroes\/.*\.webp$/,
+          handler: 'CacheFirst',
+          options: {
+            cacheName: 'hal-section-heroes-v1',
+            cacheableResponse: { statuses: [0, 200] },
+            expiration: { maxEntries: 32, maxAgeSeconds: 60 * 60 * 24 * 30 }
+          }
+        }]
       }
     })
   ],
