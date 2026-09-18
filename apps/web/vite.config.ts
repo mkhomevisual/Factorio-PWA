@@ -6,25 +6,16 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'prompt',
-      injectRegister: null,
-      includeAssets: ['icon.svg'],
+      registerType: 'autoUpdate',
       manifest: {
         name: 'HAL Factory Control',
         short_name: 'HAL Factory',
-        description: 'Živý přehled výroby a společné řízení Factorio továrny.',
-        lang: 'cs',
-        id: '/',
-        start_url: '/',
-        scope: '/',
-        theme_color: '#ff9f43',
-        background_color: '#070b0d',
+        theme_color: '#e69636',
+        background_color: '#101313',
         display: 'standalone',
-        orientation: 'any',
-        categories: ['productivity', 'utilities'],
-        icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }]
+        icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }]
       },
-      workbox: { navigateFallback: '/index.html', cleanupOutdatedCaches: true }
+      workbox: { navigateFallback: '/index.html' }
     })
   ],
   server: { proxy: { '/api': 'http://localhost:3000' } }
