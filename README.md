@@ -74,7 +74,7 @@ Přihlášené PWA drží jedno autentizované SSE spojení na `/api/events/stre
 
 Výrobní cíl ukládá počáteční kumulativní čítač položky a dále přičítá pouze kladné rozdíly mezi minutovými telemetry vzorky. Reset herního čítače proto cíl nesplní omylem; při načtení jiného save se baseline bezpečně založí znovu. Po dokončení aplikace připne automatický vzkaz, zobrazí oslavu v PWA a přes stávající interní RCON spojení pošle oznámení do hry. Neúspěšné herní oznámení se opakuje při dalším vzorku; průběh cíle zůstává bezpečně uložený v SQLite.
 
-Sekce **Úspěchy** obsahuje 150 perzistentních výzev pro oba hráče a společnou továrnu. Vyhodnocují se pouze z již dostupných telemetry a databázových údajů. Serverová obrazovka nabízí šest pevně whitelisted informačních RCON dotazů (`players`, `time`, `version`, `evolution`, `admins`, `whitelist`); klient nikdy neposílá vlastní raw příkaz.
+Sekce **Úspěchy** obsahuje 150 perzistentních výzev pro oba hráče a společnou továrnu. Většinu tvoří skutečné herní milníky z Factorio telemetry: konkrétní výrobky a kapaliny, science packy, Space Age materiály, planety, platformy, logistika a energie; webová spolupráce je jen doplňková sada. Serverová obrazovka nabízí šest pevně whitelisted informačních RCON dotazů (`players`, `time`, `version`, `evolution`, `admins`, `whitelist`); klient nikdy neposílá vlastní raw příkaz.
 
 ## Stav implementace
 

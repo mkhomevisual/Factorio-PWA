@@ -22,7 +22,7 @@ function downsample<T>(values: T[], maximum = 240): T[] {
   return values.filter((_value, index) => index % stride === 0 || index === values.length - 1);
 }
 
-export function summarizeProduction(snapshots: StoredProductionSnapshot[]) {
+export function summarizeProduction(snapshots: StoredProductionSnapshot[], itemLimit = 10) {
   const latest = snapshots.at(-1);
   const first = snapshots[0];
   const points = downsample(snapshots.map((entry) => ({
@@ -52,8 +52,8 @@ export function summarizeProduction(snapshots: StoredProductionSnapshot[]) {
   consumed.sort((left, right) => right.amount - left.amount || right.rate - left.rate);
   return {
     points,
-    topProduced: produced.slice(0, 10),
-    topConsumed: consumed.slice(0, 10),
+    topProduced: produced.slice(0, itemLimit),
+    topConsumed: consumed.slice(0, itemLimit),
     sampleCount: snapshots.length,
     basis: hasInterval ? 'interval' as const : 'current' as const,
     lastUpdatedAt: latest.collectedAt

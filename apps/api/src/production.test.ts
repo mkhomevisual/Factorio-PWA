@@ -28,3 +28,19 @@ test('ranks production and consumption independently across an interval', () => 
   assert.equal(result.topConsumed[0]?.item, 'iron-plate');
   assert.equal(result.basis, 'interval');
 });
+
+test('can return every sorted item for a shift report', () => {
+  const sharedFactory = Array.from({ length: 14 }, (_entry, index) => ({
+    item: `item-${index}`,
+    produced: index,
+    consumed: index * 2,
+    productionRate: index + 1,
+    consumptionRate: index + 2
+  }));
+  const snapshots = [{ collectedAt: '2026-09-07T12:00:00.000Z', sharedFactory }];
+  assert.equal(summarizeProduction(snapshots).topProduced.length, 10);
+  const full = summarizeProduction(snapshots, Number.POSITIVE_INFINITY);
+  assert.equal(full.topProduced.length, 14);
+  assert.equal(full.topConsumed.length, 14);
+  assert.ok(full.topProduced.every((entry, index, items) => index === 0 || (items[index - 1]?.amount ?? 0) >= entry.amount));
+});

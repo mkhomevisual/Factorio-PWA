@@ -18,7 +18,7 @@ import { MockFactoryAdapter } from './mock-adapter.js';
 import { FactorioRconAdapter } from './rcon-adapter.js';
 import { FactorioLogTailer } from './log-tailer.js';
 import { summarizeProduction, summarizeProductionRollups } from './production.js';
-import { achievementDefinitions, type AchievementMetric } from './achievements.js';
+import { achievementDefinitions, type AchievementDefinition, type AchievementMetric } from './achievements.js';
 import { advanceProductionGoals } from './production-goals.js';
 import type { SafeRconQuery } from './factory-adapter.js';
 import type { FlowKind, OperationPreference, OperationsResponse, ProductionRange } from '@hal/contracts';
@@ -80,6 +80,16 @@ function recordActivity(db: AppDatabase, eventType: string, actorUserId: string 
 
 type AchievementMetrics = Partial<Record<AchievementMetric, number>>;
 
+function achievementValue(definition: AchievementDefinition, metrics: AchievementMetrics, snapshot: FactorySnapshot) {
+  if (definition.metric === 'itemProduced') {
+    return snapshot.sharedFactory.find((item) => item.item === definition.subject)?.produced ?? 0;
+  }
+  if (definition.metric === 'fluidProduced') {
+    return snapshot.sharedFluids.find((item) => item.item === definition.subject)?.produced ?? 0;
+  }
+  return metrics[definition.metric] ?? 0;
+}
+
 function achievementState(db: AppDatabase, snapshot: FactorySnapshot, persistUnlocks: boolean) {
   const users = db.prepare('SELECT id,display_name,factorio_name FROM users ORDER BY display_name').all() as Array<{ id: string; display_name: string; factorio_name: string }>;
   const groupedCount = (sql: string) => new Map((db.prepare(sql).all() as Array<{ user_id: string; count: number }>).map((row) => [row.user_id, Number(row.count)]));
@@ -114,7 +124,16 @@ function achievementState(db: AppDatabase, snapshot: FactorySnapshot, persistUnl
     factoryMessages: count('SELECT count(*) AS count FROM messages'),
     factoryReactions: count('SELECT count(*) AS count FROM message_reactions'),
     serverUptime: snapshot.server.uptimeSeconds ?? 0,
-    onlinePlayers: snapshot.players.filter((player) => player.online).length
+    onlinePlayers: snapshot.players.filter((player) => player.online).length,
+    surfaceCount: snapshot.surfaces.filter((surface) => surface.kind !== 'platform').length,
+    planetCount: snapshot.surfaces.filter((surface) => surface.kind === 'planet').length,
+    platformCount: snapshot.platforms.length,
+    logisticItems: snapshot.logisticNetworks.reduce((sum, network) => sum + Math.max(0, network.totalItems), 0),
+    logisticRobots: snapshot.logisticNetworks.reduce((sum, network) => sum + Math.max(0, network.logisticRobots.total), 0),
+    constructionRobots: snapshot.logisticNetworks.reduce((sum, network) => sum + Math.max(0, network.constructionRobots.total), 0),
+    powerProductionMW: snapshot.surfaces.reduce((sum, surface) => sum + Math.max(0, surface.power.productionWatts), 0) / 1_000_000,
+    probeCount: snapshot.probes.filter((probe) => probe.valid).length,
+    researchQueue: snapshot.research.reduce((maximum, research) => Math.max(maximum, research.queue.length), 0)
   };
   const unlocks = new Map((db.prepare('SELECT achievement_key,scope_key,unlocked_at FROM achievement_unlocks').all() as Array<{ achievement_key: string; scope_key: string; unlocked_at: string }>).map((row) => [`${row.achievement_key}:${row.scope_key}`, row.unlocked_at]));
   const insertUnlock = db.prepare('INSERT OR IGNORE INTO achievement_unlocks(achievement_key,scope_key,unlocked_at) VALUES(?,?,?)');
@@ -122,7 +141,7 @@ function achievementState(db: AppDatabase, snapshot: FactorySnapshot, persistUnl
   const scopes = [{ scopeKey: 'factory', userId: null, name: 'Společná továrna', metrics: factoryMetrics }, ...playerScopes];
   for (const definition of achievementDefinitions) {
     for (const scope of scopes.filter((entry) => definition.audience === 'factory' ? entry.scopeKey === 'factory' : entry.scopeKey !== 'factory')) {
-      const value = Math.max(0, scope.metrics[definition.metric] ?? 0);
+      const value = Math.max(0, achievementValue(definition, scope.metrics, snapshot));
       const unlockKey = `${definition.key}:${scope.scopeKey}`;
       let unlockedAt = unlocks.get(unlockKey) ?? null;
       if (!unlockedAt && value >= definition.target && persistUnlocks) {
@@ -905,8 +924,8 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       } catch { return []; }
     });
     const production = config.FACTORY_MODE === 'mock'
-      ? summarizeProduction([{ collectedAt: timestamp(), sharedFactory: (await adapter.getSnapshot()).sharedFactory }])
-      : summarizeProduction(snapshots);
+      ? summarizeProduction([{ collectedAt: timestamp(), sharedFactory: (await adapter.getSnapshot()).sharedFactory }], Number.POSITIVE_INFINITY)
+      : summarizeProduction(snapshots, Number.POSITIVE_INFINITY);
     const snapshot = poller.latest();
     const completedTasks = db.prepare("SELECT count(*) AS count FROM tasks WHERE status='Done' AND updated_at>=?").get(since) as { count: number };
     const createdTasks = db.prepare('SELECT count(*) AS count FROM tasks WHERE created_at>=?').get(since) as { count: number };
@@ -917,7 +936,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       generatedAt: timestamp(), since, hours: query.data.hours,
       server: snapshot.server,
       players: snapshot.players.map((player) => ({ factorioName: player.factorioName, online: player.online, playtimeSeconds: player.playtimeSeconds })),
-      production: { topProduced: production.topProduced.slice(0, 5), topConsumed: production.topConsumed.slice(0, 5), sampleCount: production.sampleCount, basis: production.basis },
+      production: { topProduced: production.topProduced, topConsumed: production.topConsumed, sampleCount: production.sampleCount, basis: production.basis },
       collaboration: { completedTasks: completedTasks.count, createdTasks: createdTasks.count, messages: messageCount.count },
       events: events.map((event) => ({ ...event, payload: JSON.parse(event.payload_json), payload_json: undefined }))
     };
