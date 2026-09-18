@@ -1,1 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><rect width="256" height="256" rx="40" fill="#101313"/><path fill="#e69636" d="M43 180h170v25H43zm18-100h134v84H61z"/><path fill="#101313" d="M82 104h22v36H82zm35 0h22v36h-22zm35 0h22v36h-22z"/><circle cx="71" cy="180" r="23" fill="#e69636"/><circle cx="185" cy="180" r="23" fill="#e69636"/><circle cx="71" cy="180" r="9" fill="#101313"/><circle cx="185" cy="180" r="9" fill="#101313"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="24" y1="20" x2="230" y2="238" gradientUnits="userSpaceOnUse"><stop stop-color="#162428"/><stop offset=".5" stop-color="#0a1113"/><stop offset="1" stop-color="#070b0d"/></linearGradient>
+    <linearGradient id="amber" x1="48" y1="76" x2="208" y2="208" gradientUnits="userSpaceOnUse"><stop stop-color="#ffb45f"/><stop offset="1" stop-color="#ff8a24"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#52d3c2" stop-opacity=".28"/><stop offset="1" stop-color="#52d3c2" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="256" height="256" rx="48" fill="url(#bg)"/>
+  <circle cx="196" cy="54" r="82" fill="url(#glow)"/>
+  <rect x="10" y="10" width="236" height="236" rx="39" fill="none" stroke="#355055" stroke-width="2"/>
+  <path fill="url(#amber)" d="M43 180h170v25H43zm18-100h134v84H61z"/>
+  <path fill="#091012" d="M82 104h22v36H82zm35 0h22v36h-22zm35 0h22v36h-22z"/>
+  <circle cx="71" cy="180" r="23" fill="#ff9f43"/><circle cx="185" cy="180" r="23" fill="#ff9f43"/>
+  <circle cx="71" cy="180" r="9" fill="#091012"/><circle cx="185" cy="180" r="9" fill="#091012"/>
+  <path d="M63 73h65" stroke="#52d3c2" stroke-width="5" stroke-linecap="round" opacity=".85"/>
+</svg>
