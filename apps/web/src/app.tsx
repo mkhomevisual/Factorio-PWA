@@ -611,6 +611,53 @@ function PreferenceEditor({ operations, entityType, entityKey, forceName, onSave
 
 function visibleForOwner(preference: OperationPreference, owner: OwnerFilter) { return owner === 'all' || (owner === 'unassigned' ? !preference.ownerUserId : preference.ownerUserId === owner); }
 
+const baseSciencePacks = [
+  'automation-science-pack', 'logistic-science-pack', 'military-science-pack', 'chemical-science-pack',
+  'production-science-pack', 'utility-science-pack', 'space-science-pack', 'metallurgic-science-pack',
+  'electromagnetic-science-pack', 'agricultural-science-pack', 'cryogenic-science-pack', 'promethium-science-pack'
+] as const;
+
+type ScienceLocation = { surfaceName: string; kind: 'planet' | 'platform' | 'other'; productionRate: number; consumptionRate: number; produced: number; stock: number; players: string[]; owners: string[] };
+type SciencePackInsight = { item: string; productionRate: number; consumptionRate: number; produced: number; stock: number; requiredAmount: number; locations: ScienceLocation[] };
+
+function sciencePackInsights(operations: OperationsResponse, surfaces: OperationsResponse['surfaces'], networks: OperationsResponse['logisticNetworks'], items: string[], required: Map<string, number>): SciencePackInsight[] {
+  return items.map((item) => {
+    const locations = new Map<string, ScienceLocation & { ownerSet: Set<string> }>();
+    const ensureLocation = (surfaceName: string) => {
+      const surface = surfaces.find((entry) => entry.surfaceName === surfaceName);
+      const current = locations.get(surfaceName) ?? { surfaceName, kind: surface?.kind ?? 'other', productionRate: 0, consumptionRate: 0, produced: 0, stock: 0, players: surface?.players ?? [], owners: [], ownerSet: new Set<string>() };
+      locations.set(surfaceName, current);
+      return current;
+    };
+    for (const surface of surfaces) {
+      const flow = surface.items.find((entry) => entry.item === item);
+      if (!flow) continue;
+      const location = ensureLocation(surface.surfaceName);
+      location.productionRate += Math.max(0, flow.productionRate);
+      location.consumptionRate += Math.max(0, flow.consumptionRate);
+      location.produced += Math.max(0, flow.produced);
+      location.ownerSet.add(ownerName(operations, preferenceFor(operations, 'surface', surface.key, surface.forceName)));
+    }
+    for (const network of networks) {
+      const count = network.contents.filter((entry) => entry.item === item).reduce((sum, entry) => sum + Math.max(0, entry.count), 0);
+      if (!count) continue;
+      const location = ensureLocation(network.surfaceName);
+      location.stock += count;
+      location.ownerSet.add(ownerName(operations, preferenceFor(operations, 'logistic-network', network.id, network.forceName)));
+    }
+    const locationRows = [...locations.values()].filter((entry) => entry.productionRate > 0 || entry.consumptionRate > 0 || entry.stock > 0).map(({ ownerSet, ...entry }) => ({ ...entry, owners: [...ownerSet] })).sort((left, right) => right.productionRate + right.consumptionRate + right.stock - left.productionRate - left.consumptionRate - left.stock);
+    return {
+      item,
+      productionRate: locationRows.reduce((sum, entry) => sum + entry.productionRate, 0),
+      consumptionRate: locationRows.reduce((sum, entry) => sum + entry.consumptionRate, 0),
+      produced: locationRows.reduce((sum, entry) => sum + entry.produced, 0),
+      stock: locationRows.reduce((sum, entry) => sum + entry.stock, 0),
+      requiredAmount: required.get(item) ?? 0,
+      locations: locationRows
+    };
+  });
+}
+
 function LogisticsPanel({ operations, reload }: { operations: OperationsResponse; reload: () => Promise<void> }) {
   const { labels } = useContext(labelsContext);
   const liveRevision = useContext(liveContext);
@@ -666,9 +713,68 @@ function PlanetsView() {
   }}</OperationsShell>;
 }
 
+function ResearchOperations({ operations }: { operations: OperationsResponse }) {
+  const { labels } = useContext(labelsContext);
+  const [owner, setOwner] = useState<OwnerFilter>('all');
+  const [status, setStatus] = useState<'all' | 'required' | 'producing' | 'stored' | 'missing'>('all');
+  const [search, setSearch] = useState('');
+  const research = Array.isArray(operations.research) ? operations.research : [];
+  const required = new Map<string, number>();
+  for (const entry of research) for (const ingredient of entry.current?.ingredients ?? []) required.set(ingredient.item, (required.get(ingredient.item) ?? 0) + ingredient.amount);
+  const scienceItems = [...new Set<string>([...baseSciencePacks, ...required.keys()])];
+  const visibleSurfaces = operations.surfaces.filter((surface) => visibleForOwner(preferenceFor(operations, 'surface', surface.key, surface.forceName), owner));
+  const visibleNetworks = operations.logisticNetworks.filter((network) => visibleForOwner(preferenceFor(operations, 'logistic-network', network.id, network.forceName), owner));
+  const packs = sciencePackInsights(operations, visibleSurfaces, visibleNetworks, scienceItems, required);
+  const allPacks = sciencePackInsights(operations, operations.surfaces, operations.logisticNetworks, scienceItems, required);
+  const allPackMap = new Map(allPacks.map((pack) => [pack.item, pack]));
+  const normalizedSearch = search.trim().toLocaleLowerCase('cs');
+  const visiblePacks = packs.filter((pack) => {
+    const matchesSearch = !normalizedSearch || pack.item.includes(normalizedSearch) || labelFor(labels, pack.item).toLocaleLowerCase('cs').includes(normalizedSearch);
+    if (!matchesSearch) return false;
+    if (status === 'required') return pack.requiredAmount > 0;
+    if (status === 'producing') return pack.productionRate > 0;
+    if (status === 'stored') return pack.stock > 0;
+    if (status === 'missing') return pack.requiredAmount > 0 && pack.productionRate <= 0 && pack.stock <= 0;
+    return true;
+  });
+  const requiredPacks = packs.filter((pack) => pack.requiredAmount > 0);
+  const bottleneck = [...requiredPacks].sort((left, right) => left.productionRate - right.productionRate || left.stock - right.stock)[0];
+  const ownerOptions: Array<{ key: OwnerFilter; name: string; color: string }> = [{ key: 'all', name: 'Celá továrna', color: '#e69636' }, ...operations.profiles.map((profile) => ({ key: profile.id, name: profile.displayName, color: profile.color })), { key: 'unassigned', name: 'Nepřiřazeno', color: '#89918d' }];
+  const ownerStats = ownerOptions.map((option) => {
+    const surfaces = operations.surfaces.filter((surface) => visibleForOwner(preferenceFor(operations, 'surface', surface.key, surface.forceName), option.key));
+    const networks = operations.logisticNetworks.filter((network) => visibleForOwner(preferenceFor(operations, 'logistic-network', network.id, network.forceName), option.key));
+    const rows = sciencePackInsights(operations, surfaces, networks, scienceItems, required);
+    return { ...option, production: rows.reduce((sum, pack) => sum + pack.productionRate, 0), stock: rows.reduce((sum, pack) => sum + pack.stock, 0), active: rows.filter((pack) => pack.productionRate > 0).length, locations: new Set(rows.flatMap((pack) => pack.locations.map((location) => location.surfaceName))).size };
+  });
+  const planetRows = [...new Set(packs.flatMap((pack) => pack.locations.filter((location) => location.kind !== 'platform').map((location) => location.surfaceName)))].map((surfaceName) => {
+    const surface = visibleSurfaces.find((entry) => entry.surfaceName === surfaceName);
+    const bottleRows = packs.map((pack) => ({ pack, location: pack.locations.find((location) => location.surfaceName === surfaceName) })).filter((entry): entry is { pack: SciencePackInsight; location: ScienceLocation } => Boolean(entry.location));
+    return { surfaceName, surface, bottleRows, production: bottleRows.reduce((sum, entry) => sum + entry.location.productionRate, 0), stock: bottleRows.reduce((sum, entry) => sum + entry.location.stock, 0) };
+  }).sort((left, right) => right.production + right.stock - left.production - left.stock);
+
+  return <div className="research-operations">
+    <div className="operations-grid research-grid">{research.map((entry) => { const current = entry.current && typeof entry.current.technology === 'string' ? entry.current : null; const ingredients = current && Array.isArray(current.ingredients) ? current.ingredients : []; const queue = Array.isArray(entry.queue) ? entry.queue : []; const progress = current && Number.isFinite(current.progress) ? Math.max(0, Math.min(1, current.progress)) : 0; return <article className="operation-card research-card" key={entry.forceName}><header><div><small>FORCE · {entry.forceName}</small><h2>{current ? labelFor(labels, current.technology) : 'Výzkum stojí'}</h2></div>{current && <strong>{wholeNumber.format(progress * 100)} %</strong>}</header>{current ? <><div className="operation-progress"><i style={{ width: `${progress * 100}%` }} /></div><div className="operation-metrics"><span><small>Science tempo</small><strong>{preciseNumber.format(Number.isFinite(entry.scienceRate) ? entry.scienceRate : 0)} jednotek/min</strong></span><span><small>Odhad dokončení</small><strong>{duration(Number.isFinite(entry.etaSeconds) ? entry.etaSeconds : null)}</strong></span><span><small>Jednotek výzkumu</small><strong>{wholeNumber.format(Number.isFinite(current.unitCount) ? current.unitCount : 0)}</strong></span><span><small>Úroveň</small><strong>{Number.isFinite(current.level) ? current.level : '—'}</strong></span></div><div className="research-ingredients">{ingredients.map((ingredient) => { const pack = allPackMap.get(ingredient.item); const state = (pack?.productionRate ?? 0) > 0 ? 'active' : (pack?.stock ?? 0) > 0 ? 'stored' : 'missing'; return <span className={state} key={ingredient.item}><ItemIcon prototype={ingredient.item} /><span><strong>{ingredient.amount}× {labelFor(labels, ingredient.item)}</strong><small>+{preciseNumber.format(pack?.productionRate ?? 0)}/min · sklad {compactNumber.format(pack?.stock ?? 0)}</small></span></span>; })}</div></> : <EmptyState>Pro tuto force není aktivní žádný výzkum.</EmptyState>}<footer><small>Fronta · {queue.length} technologií</small><span>{queue.length ? queue.slice(0, 6).map((technology) => labelFor(labels, technology)).join(' → ') : 'prázdná'}{queue.length > 6 ? ` → +${queue.length - 6}` : ''}</span></footer></article>; })}{!research.length && <EmptyState>Výzkumná data zatím nejsou dostupná.</EmptyState>}</div>
+
+    <Panel title="Science podle operátora" subtitle="Rozdělení podle přiřazených povrchů a logistických sítí; kliknutím filtrujete celý přehled.">
+      <div className="science-owner-grid">{ownerStats.map((entry) => <button type="button" className={owner === entry.key ? 'active' : ''} onClick={() => setOwner(entry.key)} style={{ '--owner-color': entry.color } as CSSProperties} key={entry.key}><span className="science-owner-avatar">{entry.key === 'all' ? '∑' : entry.name.slice(0, 1)}</span><span><strong>{entry.name}</strong><small>{entry.locations} lokací · {entry.active} aktivních packů</small></span><b>+{compactNumber.format(entry.production)}/min</b><em>{compactNumber.format(entry.stock)} skladem</em></button>)}</div>
+    </Panel>
+
+    <div className="science-summary"><Metric label="Aktivně vyráběné packy" value={`${packs.filter((pack) => pack.productionRate > 0).length}/${scienceItems.length}`} note={owner === 'all' ? 'napříč celou továrnou' : `filtr: ${ownerStats.find((entry) => entry.key === owner)?.name}`} tone="production" /><Metric label="Výroba lahviček" value={`${compactNumber.format(packs.reduce((sum, pack) => sum + pack.productionRate, 0))}/min`} note={`spotřeba ${compactNumber.format(packs.reduce((sum, pack) => sum + pack.consumptionRate, 0))}/min`} tone="production" /><Metric label="V logistických sítích" value={compactNumber.format(packs.reduce((sum, pack) => sum + pack.stock, 0))} note="nejde o obsah všech truhel" /><Metric label="Nejslabší požadovaný pack" value={bottleneck ? labelFor(labels, bottleneck.item) : '—'} note={bottleneck ? `+${preciseNumber.format(bottleneck.productionRate)}/min · sklad ${compactNumber.format(bottleneck.stock)}` : 'není aktivní výzkum'} tone={bottleneck && bottleneck.productionRate <= 0 ? 'consumption' : undefined} /></div>
+
+    <div className="science-toolbar"><label><span>Hledat science pack</span><input type="search" placeholder="Název nebo prototype…" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label><span>Stav</span><select value={status} onChange={(event) => setStatus(event.target.value as typeof status)}><option value="all">Všechny packy</option><option value="required">Požadované výzkumem</option><option value="producing">Právě vyráběné</option><option value="stored">Jsou v logistice</option><option value="missing">Chybějící požadované</option></select></label><div><strong>{visiblePacks.length}</strong><span>zobrazených packů</span></div></div>
+
+    <div className="science-pack-grid">{visiblePacks.map((pack) => { const missing = pack.requiredAmount > 0 && pack.productionRate <= 0 && pack.stock <= 0; const stateLabel = missing ? 'Chybí' : pack.productionRate > 0 ? 'Vyrábí se' : pack.stock > 0 ? 'Skladem' : 'Bez toku'; const maximum = Math.max(1, pack.productionRate, pack.consumptionRate); return <article className={`science-pack-card ${missing ? 'missing' : pack.productionRate > 0 ? 'active' : ''}`} key={pack.item}><header><ItemIcon prototype={pack.item} /><div><small>{pack.item}</small><h2>{labelFor(labels, pack.item)}</h2></div><span>{pack.requiredAmount > 0 ? `${pack.requiredAmount}× pro výzkum` : stateLabel}</span></header><div className="science-pack-metrics"><span><small>Výroba teď</small><strong>+{preciseNumber.format(pack.productionRate)}/min</strong></span><span><small>Spotřeba teď</small><strong>−{preciseNumber.format(pack.consumptionRate)}/min</strong></span><span><small>Logistický sklad</small><strong>{compactNumber.format(pack.stock)}</strong></span><span><small>Vyrobeno celkem</small><strong>{compactNumber.format(pack.produced)}</strong></span></div><div className="science-flow-bars" aria-label={`Výroba ${pack.productionRate} za minutu, spotřeba ${pack.consumptionRate} za minutu`}><i className="production" style={{ width: `${pack.productionRate / maximum * 100}%` }} /><i className="consumption" style={{ width: `${pack.consumptionRate / maximum * 100}%` }} /></div><div className="science-locations">{pack.locations.map((location) => <div key={location.surfaceName}><span><strong>{labelFor(labels, location.surfaceName)}</strong><small>{location.owners.join(', ') || 'Nepřiřazeno'}{location.players.length ? ` · online: ${location.players.join(', ')}` : ''}</small></span><b>+{preciseNumber.format(location.productionRate)}/min</b><em>{compactNumber.format(location.stock)} skladem</em></div>)}{!pack.locations.length && <small>Na vybraných površích není zaznamenána výroba ani logistická zásoba.</small>}</div></article>; })}{!visiblePacks.length && <EmptyState>Žádný science pack neodpovídá zvoleným filtrům.</EmptyState>}</div>
+
+    <Panel title="Science podle planet" subtitle="Okamžitá výroba a obsah logistických sítí na jednotlivých površích.">
+      <div className="science-planet-grid">{planetRows.map((planet) => { const preference = planet.surface ? preferenceFor(operations, 'surface', planet.surface.key, planet.surface.forceName) : null; return <article key={planet.surfaceName}><header><div><small>{planet.surface?.kind === 'planet' ? 'PLANETA' : 'POVRCH'} · {preference ? ownerName(operations, preference) : 'Nepřiřazeno'}</small><h3>{labelFor(labels, planet.surface?.planetName ?? planet.surfaceName)}</h3></div>{planet.surface?.players.length ? <span>● {planet.surface.players.join(', ')}</span> : <span>○ bez hráčů</span>}</header><div className="science-planet-totals"><strong>+{compactNumber.format(planet.production)}/min</strong><span>{compactNumber.format(planet.stock)} v logistice</span></div><div className="science-planet-packs">{planet.bottleRows.map(({ pack, location }) => <span key={pack.item}><ItemIcon prototype={pack.item} /><span><strong>{labelFor(labels, pack.item)}</strong><small>+{preciseNumber.format(location.productionRate)}/min · {compactNumber.format(location.stock)} skladem</small></span></span>)}</div></article>; })}{!planetRows.length && <EmptyState>Na vybraných planetách zatím není dostupná science výroba ani logistická zásoba.</EmptyState>}</div>
+    </Panel>
+    <p className="footnote">Strojová výroba patří společné Factorio force, proto je rozdělení podle hráčů odvozeno z přiřazených povrchů a logistických sítí. Stav „skladem“ zahrnuje logistické sítě, nikoli všechny běžné truhly na planetě.</p>
+  </div>;
+}
+
 function ResearchView() {
-  const { labels } = useContext(labelsContext); const state = useOperationsData();
-  return <OperationsShell view="Research" title="Výzkum" description="Aktuální technologie, science tempo, odhad dokončení a fronta výzkumu." capability="research" state={state}>{(operations) => <div className="operations-grid research-grid">{(Array.isArray(operations.research) ? operations.research : []).map((entry) => { const current = entry.current && typeof entry.current.technology === 'string' ? entry.current : null; const ingredients = current && Array.isArray(current.ingredients) ? current.ingredients : []; const queue = Array.isArray(entry.queue) ? entry.queue : []; const progress = current && Number.isFinite(current.progress) ? Math.max(0, Math.min(1, current.progress)) : 0; return <article className="operation-card research-card" key={entry.forceName}><header><div><small>FORCE · {entry.forceName}</small><h2>{current ? labelFor(labels, current.technology) : 'Výzkum stojí'}</h2></div>{current && <strong>{wholeNumber.format(progress * 100)} %</strong>}</header>{current ? <><div className="operation-progress"><i style={{ width: `${progress * 100}%` }} /></div><div className="operation-metrics"><span><small>Science tempo</small><strong>{preciseNumber.format(Number.isFinite(entry.scienceRate) ? entry.scienceRate : 0)} jednotek/min</strong></span><span><small>Odhad dokončení</small><strong>{duration(Number.isFinite(entry.etaSeconds) ? entry.etaSeconds : null)}</strong></span><span><small>Jednotek výzkumu</small><strong>{wholeNumber.format(Number.isFinite(current.unitCount) ? current.unitCount : 0)}</strong></span><span><small>Úroveň</small><strong>{Number.isFinite(current.level) ? current.level : '—'}</strong></span></div><div className="research-ingredients">{ingredients.map((ingredient) => <span key={ingredient.item}><ItemIcon prototype={ingredient.item} /><strong>{ingredient.amount}× {labelFor(labels, ingredient.item)}</strong></span>)}</div></> : <EmptyState>Pro tuto force není aktivní žádný výzkum.</EmptyState>}<footer><small>Fronta</small><span>{queue.length ? queue.slice(0, 4).map((technology) => labelFor(labels, technology)).join(' → ') : 'prázdná'}</span></footer></article>; })}{!operations.research.length && <EmptyState>Výzkumná data zatím nejsou dostupná.</EmptyState>}</div>}</OperationsShell>;
+  const state = useOperationsData();
+  return <OperationsShell view="Research" title="Výzkum" description="Aktuální technologie, výroba science packů, logistické zásoby a příspěvek jednotlivých planet i operátorů." capability="research" state={state}>{(operations) => <ResearchOperations operations={operations} />}</OperationsShell>;
 }
 
 function PlatformsView() {

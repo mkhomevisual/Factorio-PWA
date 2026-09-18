@@ -27,6 +27,8 @@ test('serves V3 operations and fluid production to an authenticated user', async
   assert.equal(body.probes[0].name, 'Kyselina pro uran');
   assert.equal(body.profiles[0].factorioName, 'MarkanMegaBuilder');
   assert.deepEqual(body.preferences, []);
+  assert.equal(body.surfaces.find((surface: { surfaceName: string }) => surface.surfaceName === 'nauvis').items.some((item: { item: string; productionRate: number }) => item.item === 'automation-science-pack' && item.productionRate > 0), true);
+  assert.equal(body.logisticNetworks.find((network: { surfaceName: string }) => network.surfaceName === 'nauvis').contents.some((item: { item: string; count: number }) => item.item === 'automation-science-pack' && item.count > 0), true);
 
   const preference = await app.inject({ method: 'PUT', url: '/api/operations/preferences/platform/7', cookies: { hal_session: rawToken }, headers: { 'x-csrf-token': 'csrf' }, payload: { ownerUserId: userId, icon: 'rocket', accentColor: '#4aa3df', sortOrder: 10 } });
   assert.equal(preference.statusCode, 204);

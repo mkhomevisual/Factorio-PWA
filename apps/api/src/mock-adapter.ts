@@ -33,7 +33,15 @@ export class MockFactoryAdapter implements FactoryAdapter {
   async getSnapshot(_afterEventId?: string): Promise<FactorySnapshot> {
     const elapsedMinutes = Math.floor((Date.now() - startedAt) / 60_000);
     const now = new Date();
-    const nauvisItems = flow(baseCounters, elapsedMinutes, 0.62);
+    const nauvisItems = [
+      ...flow(baseCounters, elapsedMinutes, 0.62),
+      ...flow([
+        ['automation-science-pack', 46_000, 41_200], ['logistic-science-pack', 39_400, 36_100],
+        ['military-science-pack', 18_600, 15_900], ['chemical-science-pack', 31_800, 29_700],
+        ['production-science-pack', 14_200, 12_900], ['utility-science-pack', 11_800, 10_400],
+        ['space-science-pack', 9_400, 8_600]
+      ], elapsedMinutes, 0.08)
+    ];
     const vulcanusItems = flow([
       ['tungsten-plate', 18_200, 16_100], ['foundry', 420, 300], ['metallurgic-science-pack', 8_800, 8_120]
     ], elapsedMinutes, 0.34);
@@ -90,13 +98,13 @@ export class MockFactoryAdapter implements FactoryAdapter {
       }],
       logisticNetworks: [{
         id: 'player:nauvis:17', forceName: 'player', surfaceName: 'nauvis', name: 'Nauvis main bus', x: 42, y: -18,
-        totalItems: 148_430,
-        contents: [{ item: 'iron-plate', quality: 'normal', count: 48_200 }, { item: 'electronic-circuit', quality: 'normal', count: 21_840 }, { item: 'repair-pack', quality: 'normal', count: 180 }],
+        totalItems: 154_745,
+        contents: [{ item: 'iron-plate', quality: 'normal', count: 48_200 }, { item: 'electronic-circuit', quality: 'normal', count: 21_840 }, { item: 'automation-science-pack', quality: 'normal', count: 2_800 }, { item: 'logistic-science-pack', quality: 'normal', count: 1_950 }, { item: 'chemical-science-pack', quality: 'normal', count: 1_040 }, { item: 'production-science-pack', quality: 'normal', count: 525 }, { item: 'repair-pack', quality: 'normal', count: 180 }],
         logisticRobots: { available: 812, total: 1_040 }, constructionRobots: { available: 306, total: 420 }, chargingRobots: 14, waitingToChargeRobots: 3
       }, {
         id: 'player:vulcanus:23', forceName: 'player', surfaceName: 'vulcanus', name: 'Vulcanus foundry', x: -11, y: 63,
-        totalItems: 51_920,
-        contents: [{ item: 'tungsten-plate', quality: 'normal', count: 8_400 }, { item: 'repair-pack', quality: 'normal', count: 24 }],
+        totalItems: 53_160,
+        contents: [{ item: 'tungsten-plate', quality: 'normal', count: 8_400 }, { item: 'metallurgic-science-pack', quality: 'normal', count: 1_240 }, { item: 'repair-pack', quality: 'normal', count: 24 }],
         logisticRobots: { available: 184, total: 260 }, constructionRobots: { available: 72, total: 96 }, chargingRobots: 8, waitingToChargeRobots: 11
       }],
       probes: [{
