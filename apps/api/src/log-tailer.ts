@@ -30,10 +30,24 @@ export class FactorioLogTailer {
       file = await open(this.path, 'r');
       const metadata = await file.stat();
       const persisted = this.db.prepare('SELECT cursor FROM telemetry_cursors WHERE source=?').get('factorio-log') as { cursor: string } | undefined;
-      // First contact reads only a bounded tail. Subsequent runs read from the
-      // persisted byte offset and never load the complete log into memory.
-      let cursor: Cursor = persisted ? JSON.parse(persisted.cursor) : { inode: metadata.ino, offset: Math.max(0, metadata.size - 128 * 1024) };
-      if (cursor.inode !== metadata.ino || cursor.offset > metadata.size) cursor = { inode: metadata.ino, offset: 0 };
+      const now = new Date().toISOString();
+      const saveCursor = (cursor: Cursor) => this.db.prepare(`INSERT INTO telemetry_cursors(source,cursor,updated_at) VALUES(?,?,?) ON CONFLICT(source) DO UPDATE SET cursor=excluded.cursor,updated_at=excluded.updated_at`)
+        .run('factorio-log', JSON.stringify(cursor), now);
+
+      // Existing log lines do not carry reliable wall-clock timestamps. On
+      // first contact or rotation, establish a baseline at EOF instead of
+      // replaying historical lines and presenting them as events from "now".
+      if (!persisted) {
+        saveCursor({ inode: metadata.ino, offset: metadata.size });
+        return;
+      }
+      let cursor: Cursor;
+      try { cursor = JSON.parse(persisted.cursor) as Cursor; }
+      catch { saveCursor({ inode: metadata.ino, offset: metadata.size }); return; }
+      if (cursor.inode !== metadata.ino || cursor.offset > metadata.size) {
+        saveCursor({ inode: metadata.ino, offset: metadata.size });
+        return;
+      }
       if (cursor.offset === metadata.size) return;
       const readLength = Math.min(256 * 1024, metadata.size - cursor.offset);
       const newBytes = Buffer.allocUnsafe(readLength);
@@ -41,14 +55,9 @@ export class FactorioLogTailer {
       const chunk = newBytes.subarray(0, bytesRead);
       const finalNewline = chunk.lastIndexOf(10);
       if (finalNewline < 0) return;
-      let parseStart = 0;
-      if (!persisted && cursor.offset > 0) {
-        const firstNewline = chunk.indexOf(10);
-        parseStart = firstNewline < 0 ? finalNewline + 1 : firstNewline + 1;
-      }
+      const parseStart = 0;
       const complete = chunk.subarray(parseStart, finalNewline + 1);
       const lines = complete.toString('utf8').split('\n').slice(-501, -1);
-      const now = new Date().toISOString();
       const insert = this.db.prepare(`INSERT OR IGNORE INTO activity_events(id,source,event_type,actor_user_id,external_event_id,payload_json,occurred_at,created_at)
         VALUES(?,?,?,?,?,?,?,?)`);
       const actor = this.db.prepare('SELECT id FROM users WHERE factorio_name=?');
@@ -63,8 +72,7 @@ export class FactorioLogTailer {
           byteOffset += Buffer.byteLength(line) + 1;
         }
         const next: Cursor = { inode: metadata.ino, offset: cursor.offset + finalNewline + 1 };
-        this.db.prepare(`INSERT INTO telemetry_cursors(source,cursor,updated_at) VALUES(?,?,?) ON CONFLICT(source) DO UPDATE SET cursor=excluded.cursor,updated_at=excluded.updated_at`)
-          .run('factorio-log', JSON.stringify(next), now);
+        saveCursor(next);
       });
       transaction();
     } catch (error) {

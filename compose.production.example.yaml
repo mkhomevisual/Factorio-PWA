@@ -17,7 +17,9 @@ services:
     secrets:
       - factorio_rcon_password
     volumes:
-      - /srv/factorio/data/factorio-current.log:/factorio/factorio-current.log:ro
+      # Mount the containing directory so a Factorio restart/rotation exposes
+      # the new log inode instead of pinning the previous log inside this container.
+      - /srv/factorio/data:/factorio:ro
     networks:
       - factorio_default
       - nginx-proxy
