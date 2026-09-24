@@ -14,8 +14,9 @@ test('serves V3 operations and fluid production to an authenticated user', async
     .run(userId, 'martin', 'Martin', 'MarkanMegaBuilder', 'unused', now);
   db.prepare('INSERT INTO sessions(id,token_hash,user_id,csrf_token,expires_at,created_at) VALUES(?,?,?,?,?,?)')
     .run('session-1', createHash('sha256').update(rawToken).digest('hex'), userId, 'csrf', '2099-01-01T00:00:00.000Z', now);
-  const app = buildApp({ db, adapter: new MockFactoryAdapter() });
+  const app = buildApp({ db, adapter: new MockFactoryAdapter(), refreshCooldownMs: 0 });
   await app.ready();
+  await app.inject({ method: 'POST', url: '/api/server/telemetry-refresh', cookies: { hal_session: rawToken }, headers: { 'x-csrf-token': 'csrf' } });
 
   const operations = await app.inject({ method: 'GET', url: '/api/operations', cookies: { hal_session: rawToken } });
   assert.equal(operations.statusCode, 200);

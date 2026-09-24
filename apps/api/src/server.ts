@@ -25,6 +25,7 @@ import type { FlowKind, OperationPreference, OperationsResponse, ProductionRange
 import { listFlowRollups, persistTelemetryMetrics } from './telemetry-storage.js';
 import { inspectBlueprintString } from './blueprint-inspector.js';
 import { formatSseEvent, LiveEventBroker, publishLive, registerLiveBroker, unregisterLiveBroker } from './live-events.js';
+import { SerializedFactoryAdapter } from './serialized-adapter.js';
 
 const SESSION_COOKIE = 'hal_session';
 const sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14;
@@ -278,7 +279,7 @@ function unavailableSnapshot(): FactorySnapshot {
     capabilities: [],
     instanceId: null,
     generatedAtTick: null,
-    generatedAt: timestamp(),
+    generatedAt: new Date(0).toISOString(),
     server: { online: false, version: null, gameState: 'unknown', uptimeSeconds: null, lastSaveAt: null },
     players: [],
     sharedFactory: [],
@@ -392,18 +393,71 @@ function processGameTaskEvent(db: AppDatabase, event: FactorySnapshot['events'][
 
 class TelemetryPoller {
   private timer: NodeJS.Timeout | undefined;
-  private busy = false;
+  private stopped = true;
+  private inFlight: Promise<TelemetryRefreshResult> | null = null;
   private latestSnapshot: FactorySnapshot | null;
-  constructor(private readonly db: AppDatabase, private readonly adapter: FactoryAdapter) {
+  private lastCompletedAt: string | null;
+  private lastStartedAt: number | null = null;
+  private lastError: string | null = null;
+  private backoffMs: number;
+  private readonly counters = { requests: 0, started: 0, completed: 0, failed: 0, deduplicated: 0, cooldownHits: 0, cacheHits: 0, cacheMisses: 0, lastDurationMs: null as number | null };
+
+  constructor(
+    private readonly db: AppDatabase,
+    private readonly adapter: FactoryAdapter,
+    private readonly settings: { cooldownMs: number; backgroundEnabled: boolean; backgroundIntervalMs: number; initialRefreshEnabled: boolean },
+    private readonly afterRefresh: () => Promise<void>
+  ) {
     this.latestSnapshot = storedSnapshot(db);
+    this.lastCompletedAt = (db.prepare("SELECT collected_at FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' ORDER BY collected_at DESC LIMIT 1").get() as { collected_at: string } | undefined)?.collected_at ?? null;
+    this.backoffMs = settings.backgroundIntervalMs;
   }
 
-  async start() { await this.poll(); this.timer = setInterval(() => void this.poll(), 60_000); }
-  stop() { if (this.timer) clearInterval(this.timer); }
-  latest() { return structuredClone(this.latestSnapshot ?? unavailableSnapshot()); }
-  async poll() {
-    if (this.busy) return;
-    this.busy = true;
+  start() {
+    this.stopped = false;
+    if (this.settings.initialRefreshEnabled) void this.refresh('startup');
+    if (this.settings.backgroundEnabled) this.scheduleBackground(this.settings.backgroundIntervalMs);
+  }
+  stop() { this.stopped = true; if (this.timer) clearTimeout(this.timer); }
+  latest() {
+    if (this.latestSnapshot) this.counters.cacheHits += 1;
+    else this.counters.cacheMisses += 1;
+    return structuredClone(this.latestSnapshot ?? unavailableSnapshot());
+  }
+  status() {
+    return {
+      hasData: this.latestSnapshot !== null,
+      running: this.inFlight !== null,
+      lastCompletedAt: this.lastCompletedAt,
+      lastError: this.lastError,
+      cooldownMs: this.settings.cooldownMs,
+      backgroundSamplingEnabled: this.settings.backgroundEnabled,
+      backgroundSamplingIntervalMs: this.settings.backgroundIntervalMs,
+      metrics: { ...this.counters }
+    };
+  }
+
+  refresh(source: 'manual' | 'background' | 'startup' = 'manual'): Promise<TelemetryRefreshResult> {
+    this.counters.requests += 1;
+    if (this.inFlight) {
+      this.counters.deduplicated += 1;
+      return this.inFlight.then((result) => ({ ...result, disposition: 'deduplicated' }));
+    }
+    const now = Date.now();
+    if (this.lastStartedAt !== null && now - this.lastStartedAt < this.settings.cooldownMs) {
+      this.counters.cooldownHits += 1;
+      return Promise.resolve({ ok: true, disposition: 'cooldown', lastCompletedAt: this.lastCompletedAt, error: null });
+    }
+    this.lastStartedAt = now;
+    this.counters.started += 1;
+    const job = this.collect(source);
+    this.inFlight = job;
+    void job.finally(() => { if (this.inFlight === job) this.inFlight = null; });
+    return job;
+  }
+
+  private async collect(source: 'manual' | 'background' | 'startup'): Promise<TelemetryRefreshResult> {
+    const startedAt = performance.now();
     try {
       const previousCursor = this.db.prepare('SELECT cursor FROM telemetry_cursors WHERE source=?').get('hal-telemetry') as { cursor: string } | undefined;
       const snapshot = await this.adapter.getSnapshot(previousCursor?.cursor);
@@ -454,26 +508,60 @@ class TelemetryPoller {
           requestLog('goal announcement failed', error);
         }
       }
-      // Raw per-minute samples stay compact; hourly and daily rollups retain the long-term history.
+      // Recent raw samples stay compact; hourly and daily rollups retain long-term history.
       this.db.prepare("DELETE FROM telemetry_snapshots WHERE collected_at < datetime('now', '-48 hours')").run();
+      await this.afterRefresh();
+      this.lastCompletedAt = collectedAt;
+      this.lastError = null;
+      this.counters.completed += 1;
+      return { ok: true, disposition: 'started', lastCompletedAt: collectedAt, error: null };
     } catch (error) {
-      requestLog('telemetry poll failed', error);
-    } finally { this.busy = false; }
+      this.lastError = error instanceof Error ? error.message : 'unknown error';
+      this.counters.failed += 1;
+      requestLog('telemetry refresh failed', error);
+      return { ok: false, disposition: 'started', lastCompletedAt: this.lastCompletedAt, error: 'Factorio telemetry není dostupná; zobrazuji poslední uložená data.' };
+    } finally {
+      this.counters.lastDurationMs = Math.round(performance.now() - startedAt);
+      console.info(JSON.stringify({ event: 'hal.telemetry.refresh', source, durationMs: this.counters.lastDurationMs, ok: this.lastError === null }));
+    }
+  }
+
+  private scheduleBackground(delayMs: number) {
+    if (this.stopped) return;
+    this.timer = setTimeout(async () => {
+      const result = await this.refresh('background');
+      this.backoffMs = result.ok ? this.settings.backgroundIntervalMs : Math.min(Math.max(this.backoffMs * 2, this.settings.backgroundIntervalMs), 3_600_000);
+      if (!this.stopped) this.scheduleBackground(this.backoffMs);
+    }, delayMs);
   }
 }
+
+type TelemetryRefreshResult = {
+  ok: boolean;
+  disposition: 'started' | 'deduplicated' | 'cooldown';
+  lastCompletedAt: string | null;
+  error: string | null;
+};
 
 function requestLog(message: string, error: unknown) {
   // Never emit request configuration or RCON credentials.
   console.warn(message, error instanceof Error ? error.message : 'unknown error');
 }
 
-export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter } = {}) {
+export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter; refreshCooldownMs?: number } = {}) {
   const db = options.db ?? openDatabase(config.DATABASE_PATH);
-  const adapter = options.adapter ?? (config.FACTORY_MODE === 'mock' ? new MockFactoryAdapter() : new FactorioRconAdapter(config));
+  const baseAdapter = options.adapter ?? (config.FACTORY_MODE === 'mock' ? new MockFactoryAdapter() : new FactorioRconAdapter(config));
+  const adapter = new SerializedFactoryAdapter(baseAdapter);
   const app = Fastify({ logger: false, trustProxy: config.NODE_ENV === 'production' });
-  const poller = new TelemetryPoller(db, adapter);
   const logTailer = new FactorioLogTailer(db, config.FACTORIO_LOG_PATH);
+  const poller = new TelemetryPoller(db, adapter, {
+    cooldownMs: options.refreshCooldownMs ?? config.HAL_REFRESH_COOLDOWN_MS,
+    backgroundEnabled: config.HAL_BACKGROUND_SAMPLING_ENABLED,
+    backgroundIntervalMs: config.HAL_BACKGROUND_SAMPLING_INTERVAL_MS,
+    initialRefreshEnabled: config.HAL_LIVE_RCON_ON_PAGE_LOAD
+  }, () => logTailer.poll());
   const liveBroker = new LiveEventBroker();
+  const productionCache = new Map<string, { version: string | null; value: unknown }>();
   registerLiveBroker(db, liveBroker);
 
   void app.register(cookie);
@@ -545,7 +633,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     if (lastSave) snapshot.server.lastSaveAt = lastSave.occurred_at;
     const tasks = db.prepare("SELECT id,title,status,priority,location FROM tasks WHERE status != 'Done' ORDER BY priority DESC, updated_at DESC LIMIT 5").all();
     const activity = db.prepare('SELECT event_type,payload_json,occurred_at FROM activity_events ORDER BY occurred_at DESC LIMIT 12').all();
-    return { snapshot, tasks, activity, appUptimeSeconds: Math.floor(process.uptime()) };
+    return { snapshot, telemetry: poller.status(), tasks, activity, appUptimeSeconds: Math.floor(process.uptime()) };
   });
 
   app.get('/api/operations', async (request, reply) => {
@@ -924,7 +1012,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       } catch { return []; }
     });
     const production = config.FACTORY_MODE === 'mock'
-      ? summarizeProduction([{ collectedAt: timestamp(), sharedFactory: (await adapter.getSnapshot()).sharedFactory }], Number.POSITIVE_INFINITY)
+      ? summarizeProduction([{ collectedAt: timestamp(), sharedFactory: poller.latest().sharedFactory }], Number.POSITIVE_INFINITY)
       : summarizeProduction(snapshots, Number.POSITIVE_INFINITY);
     const snapshot = poller.latest();
     const completedTasks = db.prepare("SELECT count(*) AS count FROM tasks WHERE status='Done' AND updated_at>=?").get(since) as { count: number };
@@ -954,10 +1042,19 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     const kind = query.data.kind as FlowKind;
     const range = query.data.range as ProductionRange;
     const comparisonItems = [...new Set((query.data.items?.split(',') ?? (query.data.item ? [query.data.item] : [])).filter((item) => /^[a-z0-9][a-z0-9_-]*$/.test(item)))].slice(0, 4);
+    const cacheVersion = poller.status().lastCompletedAt;
+    const cacheKey = `${range}:${kind}:${comparisonItems.join(',')}`;
+    const cached = productionCache.get(cacheKey);
+    if (cached?.version === cacheVersion) return cached.value;
+    const cacheProduction = <T,>(value: T) => {
+      productionCache.set(cacheKey, { version: cacheVersion, value });
+      if (productionCache.size > 100) productionCache.delete(productionCache.keys().next().value!);
+      return value;
+    };
     const minutesByRange: Record<ProductionRange, number> = { '1m': 1, '15m': 15, '1h': 60, '6h': 360, '24h': 1440, '7d': 10_080, '30d': 43_200, '1y': 525_600 };
     const minutes = minutesByRange[range];
     if (config.FACTORY_MODE === 'mock') {
-      const snapshot = await adapter.getSnapshot();
+      const snapshot = poller.latest();
       const source = kind === 'item' ? snapshot.sharedFactory : snapshot.sharedFluids;
       const pointCount = range === '1m' ? 12 : range === '1y' ? 52 : range === '30d' ? 60 : range === '7d' ? 56 : range === '24h' ? 24 : range === '6h' ? 36 : 30;
       const stepMinutes = minutes / pointCount;
@@ -974,7 +1071,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       const availableItems = [...source].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate)).map((item) => item.item);
       const catalog = [...source].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate));
       const comparison = comparisonItems.map((item) => ({ item, points: buildMockPoints(item) }));
-      return { range, kind, points, comparison, topProduced, topConsumed, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null, sampleCount: pointCount, basis: minutes > 1 ? 'interval' : 'current', lastUpdatedAt: snapshot.generatedAt };
+      return cacheProduction({ range, kind, points, comparison, topProduced, topConsumed, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null, sampleCount: pointCount, basis: minutes > 1 ? 'interval' : 'current', lastUpdatedAt: snapshot.generatedAt });
     }
 
     const cutoff = new Date(Date.now() - minutes * 60_000).toISOString();
@@ -988,7 +1085,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       const catalog = [...source].sort((a, b) => Math.max(b.productionRate, b.consumptionRate) - Math.max(a.productionRate, a.consumptionRate));
       const points = comparisonItems.length === 1 ? summarizeProductionRollups(rollups.filter((entry) => entry.item === comparisonItems[0])).points : summary.points;
       const comparison = comparisonItems.map((item) => ({ item, points: summarizeProductionRollups(rollups.filter((entry) => entry.item === item)).points }));
-      return { range, kind, ...summary, points, comparison, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null };
+      return cacheProduction({ range, kind, ...summary, points, comparison, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null });
     }
 
     const rows = db.prepare("SELECT collected_at,payload FROM telemetry_snapshots WHERE scope_type='shared' AND scope_key='main' AND contract_version IN (2,3) AND collected_at>=? ORDER BY collected_at").all(cutoff) as Array<{ collected_at: string; payload: Buffer }>;
@@ -1012,7 +1109,7 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
       item: selectedItem,
       points: summarizeProduction(snapshots.map((snapshot) => ({ ...snapshot, sharedFactory: snapshot.sharedFactory.filter((item) => item.item === selectedItem) }))).points
     }));
-    return { range, kind, ...summary, points, comparison, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null };
+    return cacheProduction({ range, kind, ...summary, points, comparison, availableItems, catalog, selectedItems: comparisonItems, selectedItem: comparisonItems[0] ?? null });
   });
 
   app.get('/api/icons/:prototype', async (request, reply) => {
@@ -1071,10 +1168,16 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
 
   app.post('/api/server/telemetry-refresh', async (request, reply) => {
     const user = requireUser(db, request, reply); if (!user) return;
-    await poller.poll();
-    recordAudit(db, user.id, 'telemetry.refresh', 'success');
-    recordActivity(db, 'telemetry.refreshed', user.id, {});
-    return { ok: true };
+    const result = await poller.refresh('manual');
+    recordAudit(db, user.id, 'telemetry.refresh', result.ok ? 'success' : 'failed', { disposition: result.disposition });
+    if (!result.ok) return reply.code(502).send(result);
+    if (result.disposition === 'started') recordActivity(db, 'telemetry.refreshed', user.id, { lastCompletedAt: result.lastCompletedAt });
+    return result;
+  });
+
+  app.get('/api/server/diagnostics', async (request, reply) => {
+    if (!requireUser(db, request, reply)) return;
+    return { telemetry: poller.status(), rconQueue: adapter.metrics() };
   });
 
   app.post('/api/server/save', async (request, reply) => {
@@ -1111,8 +1214,8 @@ export function buildApp(options: { db?: AppDatabase; adapter?: FactoryAdapter }
     void app.register(fastifyStatic, { root: webRoot, wildcard: false });
     app.setNotFoundHandler((request, reply) => request.url.startsWith('/api/') ? reply.code(404).send({ error: 'Not found.' }) : reply.sendFile('index.html'));
   }
-  app.addHook('onReady', async () => { await poller.start(); logTailer.start(); });
-  app.addHook('onClose', () => { poller.stop(); logTailer.stop(); unregisterLiveBroker(db); db.close(); });
+  app.addHook('onReady', () => { poller.start(); });
+  app.addHook('onClose', () => { poller.stop(); adapter.close(); unregisterLiveBroker(db); db.close(); });
   return app;
 }
 

@@ -19,52 +19,74 @@ export interface FactorioRconOptions {
   timeoutMs?: number;
 }
 
-/**
- * Executes one Factorio RCON command on a short-lived connection.
- *
- * Factorio sends an empty RESPONSE_VALUE packet immediately before its
- * AUTH_RESPONSE. Several generic RCON clients treat that first packet as a
- * successful login and then get their request/response sequence out of sync.
- */
-export async function executeFactorioRconCommand(
-  options: FactorioRconOptions,
-  command: string
-): Promise<string> {
-  const timeoutMs = options.timeoutMs ?? 8_000;
-  const socket = net.createConnection({ host: options.host, port: options.port });
-  const reader = new PacketReader(socket);
+type RconSession = { socket: net.Socket; reader: PacketReader };
 
-  try {
-    await waitForConnection(socket, timeoutMs);
+/** Persistent client. Its caller must serialize commands. A failed session is
+ * discarded so the following command reconnects and authenticates safely. */
+export class FactorioRconClient {
+  private session: RconSession | null = null;
+  private nextCommandId = 2;
 
-    const authId = 1;
-    await writePacket(socket, { id: authId, type: AUTH, body: Buffer.from(options.password, 'utf8') });
+  constructor(private readonly options: FactorioRconOptions) {}
 
-    // Factorio may first send an empty RESPONSE_VALUE, then AUTH_RESPONSE.
-    let authenticated = false;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const packet = await reader.next(timeoutMs);
-      if (packet.id === -1) throw new Error('RCON authentication failed.');
-      if (packet.id !== authId) throw new Error('RCON returned an unexpected authentication packet ID.');
-      if (packet.type === RESPONSE_VALUE && packet.body.length === 0) continue;
-      if (packet.type !== AUTH_RESPONSE) throw new Error('RCON returned an unexpected authentication packet.');
-      authenticated = true;
-      break;
+  async execute(command: string): Promise<string> {
+    const timeoutMs = this.options.timeoutMs ?? 8_000;
+    const session = await this.connect();
+    const commandId = this.nextCommandId++;
+    try {
+      await writePacket(session.socket, { id: commandId, type: EXEC_COMMAND, body: Buffer.from(command, 'utf8') });
+      const response = await session.reader.next(timeoutMs);
+      if (response.id !== commandId || response.type !== RESPONSE_VALUE) throw new Error('RCON returned an unexpected command response.');
+      return response.body.toString('utf8');
+    } catch (error) {
+      this.disconnect();
+      throw error;
     }
-    if (!authenticated) throw new Error('RCON did not confirm authentication.');
-
-    const commandId = 2;
-    await writePacket(socket, { id: commandId, type: EXEC_COMMAND, body: Buffer.from(command, 'utf8') });
-    const response = await reader.next(timeoutMs);
-    if (response.id !== commandId || response.type !== RESPONSE_VALUE) {
-      throw new Error('RCON returned an unexpected command response.');
-    }
-    return response.body.toString('utf8');
-  } finally {
-    // A command gets its full response before this runs. Closing our short-lived
-    // client socket is intentional and must not turn a successful command into an error.
-    socket.end();
   }
+
+  close() { this.disconnect(); }
+
+  private async connect(): Promise<RconSession> {
+    if (this.session && !this.session.socket.destroyed) return this.session;
+    const timeoutMs = this.options.timeoutMs ?? 8_000;
+    const socket = net.createConnection({ host: this.options.host, port: this.options.port });
+    const reader = new PacketReader(socket);
+    try {
+      await waitForConnection(socket, timeoutMs);
+      const authId = 1;
+      await writePacket(socket, { id: authId, type: AUTH, body: Buffer.from(this.options.password, 'utf8') });
+      let authenticated = false;
+      // Factorio may first send an empty RESPONSE_VALUE, then AUTH_RESPONSE.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const packet = await reader.next(timeoutMs);
+        if (packet.id === -1) throw new Error('RCON authentication failed.');
+        if (packet.id !== authId) throw new Error('RCON returned an unexpected authentication packet ID.');
+        if (packet.type === RESPONSE_VALUE && packet.body.length === 0) continue;
+        if (packet.type !== AUTH_RESPONSE) throw new Error('RCON returned an unexpected authentication packet.');
+        authenticated = true;
+        break;
+      }
+      if (!authenticated) throw new Error('RCON did not confirm authentication.');
+      this.session = { socket, reader };
+      return this.session;
+    } catch (error) {
+      socket.destroy();
+      throw error;
+    }
+  }
+
+  private disconnect() {
+    const session = this.session;
+    this.session = null;
+    if (session && !session.socket.destroyed) session.socket.destroy();
+  }
+}
+
+/** Compatibility helper for one-off callers and protocol tests. */
+export async function executeFactorioRconCommand(options: FactorioRconOptions, command: string): Promise<string> {
+  const client = new FactorioRconClient(options);
+  try { return await client.execute(command); }
+  finally { client.close(); }
 }
 
 class PacketReader {

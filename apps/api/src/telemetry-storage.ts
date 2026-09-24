@@ -67,6 +67,8 @@ export function persistTelemetryMetrics(db: AppDatabase, snapshot: FactorySnapsh
       );
     }
     db.prepare("DELETE FROM telemetry_surface_samples WHERE collected_at < datetime('now', '-48 hours')").run();
+    db.prepare("DELETE FROM telemetry_flow_rollups WHERE bucket_seconds=3600 AND bucket_start < datetime('now', '-30 days')").run();
+    db.prepare("DELETE FROM telemetry_flow_rollups WHERE bucket_seconds=86400 AND bucket_start < datetime('now', '-2 years')").run();
   })();
 }
 

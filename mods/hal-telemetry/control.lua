@@ -260,18 +260,10 @@ end
 
 local function make_power(surface, force)
   local network_statistics = {}
-  local seen_networks = {}
+  -- Keep the safe snapshot bounded. Walking every electric pole and
+  -- accumulator caused full entity scans and visible UPS spikes.
   if surface.has_global_electric_network and surface.global_electric_network_statistics then
     table.insert(network_statistics, surface.global_electric_network_statistics)
-  else
-    for _, pole in pairs(surface.find_entities_filtered { type = 'electric-pole', force = force }) do
-      local network_id = pole.electric_network_id
-      local statistics = pole.electric_network_statistics
-      if network_id and statistics and statistics.valid and not seen_networks[network_id] then
-        seen_networks[network_id] = true
-        table.insert(network_statistics, statistics)
-      end
-    end
   end
 
   local production, consumption = 0, 0
@@ -283,18 +275,15 @@ local function make_power(surface, force)
     merge_power_breakdown(consumers, flow_breakdown(statistics, 'input'))
   end
 
-  local accumulator_charge, accumulator_capacity = 0, 0
-  for _, accumulator in pairs(surface.find_entities_filtered { type = 'accumulator', force = force }) do
-    accumulator_charge = accumulator_charge + math.max(0, accumulator.energy or 0)
-    accumulator_capacity = accumulator_capacity + math.max(0, accumulator.electric_buffer_size or 0)
-  end
   return {
     available = #network_statistics > 0,
     networkCount = #network_statistics,
     productionWatts = production,
     consumptionWatts = consumption,
-    accumulatorChargeJoules = accumulator_charge,
-    accumulatorCapacityJoules = accumulator_capacity,
+    -- Exact accumulator totals need an entity scan and are intentionally not
+    -- part of the normal refresh anymore.
+    accumulatorChargeJoules = 0,
+    accumulatorCapacityJoules = 0,
     producers = array(power_breakdown_list(producers)),
     consumers = array(power_breakdown_list(consumers))
   }

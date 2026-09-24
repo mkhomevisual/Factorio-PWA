@@ -31,7 +31,8 @@ test('creates and completes an app task from deduplicated Factorio events', asyn
     .run('user-1', 'martin', 'Martin', 'MarkanMegaBuilder', 'unused', now);
   db.prepare('INSERT INTO sessions(id,token_hash,user_id,csrf_token,expires_at,created_at) VALUES(?,?,?,?,?,?)')
     .run('session-1', createHash('sha256').update(token).digest('hex'), 'user-1', 'csrf', '2099-01-01T00:00:00.000Z', now);
-  const app = buildApp({ db, adapter }); await app.ready();
+  const app = buildApp({ db, adapter, refreshCooldownMs: 0 }); await app.ready();
+  await app.inject({ method: 'POST', url: '/api/server/telemetry-refresh', cookies: { hal_session: token }, headers: { 'x-csrf-token': 'csrf' } });
   const first = await app.inject({ method: 'GET', url: '/api/tasks', cookies: { hal_session: token } });
   assert.equal(first.statusCode, 200); assert.equal(first.json().length, 1);
   assert.equal(first.json()[0].location, '[gps=12.5,-8,nauvis]');

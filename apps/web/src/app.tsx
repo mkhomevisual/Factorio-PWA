@@ -12,6 +12,7 @@ type User = { id: string; displayName: string; factorioName: string; color: stri
 type FactoryItem = { item: string; produced: number; consumed: number; productionRate: number; consumptionRate: number };
 type Dashboard = {
   appUptimeSeconds: number;
+  telemetry: { hasData: boolean; running: boolean; lastCompletedAt: string | null; lastError: string | null; cooldownMs: number; backgroundSamplingEnabled: boolean };
   snapshot: {
     generatedAt: string;
     server: { online: boolean; version: string | null; gameState: string; uptimeSeconds: number | null; lastSaveAt: string | null };
@@ -63,14 +64,14 @@ const uiCs = {
   navDashboard: 'Přehled', navTasks: 'Úkoly', navMessages: 'Vzkazy', navProduction: 'Výroba', navPlanets: 'Planety', navResearch: 'Výzkum', navPlatforms: 'Platformy', navEnergy: 'Energie', navLogistics: 'Logistika', navProbes: 'Sondy', navGoals: 'Výrobní cíle',
   navAchievements: 'Úspěchy', navReport: 'Report směny', navActivity: 'Události', navProfiles: 'Hráči', navServer: 'Server',
   mainNavigation: 'Hlavní navigace', itemLanguage: 'Jazyk aplikace a položek', openMenu: 'Otevřít menu', closeMenu: 'Zavřít menu', logout: 'Odhlásit',
-  refresh: 'Obnovit', refreshing: 'Obnovuji…', cancel: 'Zrušit', delete: 'Smazat', deleting: 'Mažu…',
+  refresh: 'Aktualizovat data', refreshing: 'Aktualizuji…', cancel: 'Zrušit', delete: 'Smazat', deleting: 'Mažu…',
   dashboardEyebrow: 'ŽIVÝ PŘEHLED', dashboardTitle: 'Dobré směny.', dashboardOnline: 'Továrna naposledy odpověděla', dashboardOffline: 'Čekám na živou odpověď Factorio telemetry.',
   tasksEyebrow: 'SPOLEČNÁ PRÁCE', tasksTitle: 'Úkoly', tasksArchive: 'Archiv úkolů', tasksDescription: 'Přetáhněte kartu mezi sloupci, nebo otevřete detail pro kompletní úpravu.', activeTasks: 'Aktivní úkoly', archive: 'Archiv',
   messagesEyebrow: 'MEZI OPERÁTORY', messagesTitle: 'Vzkazy', messagesDescription: 'Krátké poznámky, které uvidíte oba. Bez stavů, priorit a zbytečné administrativy.',
   productionEyebrow: 'SPOLEČNÁ TOVÁRNA', productionTitle: 'Výroba', productionDescription: 'Vyberte až čtyři položky a porovnejte jejich výrobu i spotřebu v jednom grafu.',
   goalsEyebrow: 'VÝROBNÍ PLÁN', goalsTitle: 'Výrobní cíle', goalsDescription: 'Sledujte přírůstek výroby od založení cíle. Splnění se připíše do Vzkazů a ohlásí přímo ve hře.', refreshGoals: 'Zjistit nynější stav',
   achievementsEyebrow: 'TOVÁRNÍ TROFEJE', achievementsTitle: 'Úspěchy', achievementsDescription: 'různých výzev pro hráče i společnou továrnu.',
-  reportEyebrow: 'AUTOMATICKÉ PŘEDÁNÍ', reportTitle: 'Report směny', reportDescription: 'Živý souhrn výroby, lidí a společné práce. Obnovuje se každou minutu.',
+  reportEyebrow: 'PŘEDÁNÍ SMĚNY', reportTitle: 'Report směny', reportDescription: 'Souhrn výroby, lidí a společné práce z posledních uložených dat.',
   activityEyebrow: 'ČASOVÁ OSA', activityTitle: 'Události', activityDescription: 'Posledních 100 změn z Factorio serveru a aplikace.',
   profilesEyebrow: 'OPERÁTOŘI', profilesTitle: 'Hráči', profilesDescription: 'Všechny dostupné osobní statistiky z telemetry a společné práce ve webu.',
   serverEyebrow: 'BEZPEČNÉ OVLÁDÁNÍ', serverTitle: 'Server', serverDescription: 'Pouze pevně povolené informační RCON dotazy a zprávy do hry. Žádná raw konzole.',
@@ -86,14 +87,14 @@ const uiEn: Record<UiKey, string> = {
   navDashboard: 'Overview', navTasks: 'Tasks', navMessages: 'Messages', navProduction: 'Production', navPlanets: 'Planets', navResearch: 'Research', navPlatforms: 'Platforms', navEnergy: 'Energy', navLogistics: 'Logistics', navProbes: 'Probes', navGoals: 'Production goals',
   navAchievements: 'Achievements', navReport: 'Shift report', navActivity: 'Activity', navProfiles: 'Players', navServer: 'Server',
   mainNavigation: 'Main navigation', itemLanguage: 'Application and item language', openMenu: 'Open menu', closeMenu: 'Close menu', logout: 'Log out',
-  refresh: 'Refresh', refreshing: 'Refreshing…', cancel: 'Cancel', delete: 'Delete', deleting: 'Deleting…',
+  refresh: 'Update data', refreshing: 'Updating…', cancel: 'Cancel', delete: 'Delete', deleting: 'Deleting…',
   dashboardEyebrow: 'LIVE OVERVIEW', dashboardTitle: 'Good shift.', dashboardOnline: 'The factory last responded', dashboardOffline: 'Waiting for a live Factorio telemetry response.',
   tasksEyebrow: 'SHARED WORK', tasksTitle: 'Tasks', tasksArchive: 'Task archive', tasksDescription: 'Drag a card between columns, or open its detail for full editing.', activeTasks: 'Active tasks', archive: 'Archive',
   messagesEyebrow: 'BETWEEN OPERATORS', messagesTitle: 'Messages', messagesDescription: 'Short notes visible to both of you, without statuses, priorities, or extra administration.',
   productionEyebrow: 'SHARED FACTORY', productionTitle: 'Production', productionDescription: 'Select up to four items and compare both their production and consumption in one chart.',
   goalsEyebrow: 'PRODUCTION PLAN', goalsTitle: 'Production goals', goalsDescription: 'Track production added since a goal was created. Completion is posted to Messages and announced in game.', refreshGoals: 'Check current progress',
   achievementsEyebrow: 'FACTORY TROPHIES', achievementsTitle: 'Achievements', achievementsDescription: 'different challenges for players and the shared factory.',
-  reportEyebrow: 'AUTOMATIC HANDOVER', reportTitle: 'Shift report', reportDescription: 'A live summary of production, players, and shared work. Refreshes every minute.',
+  reportEyebrow: 'SHIFT HANDOVER', reportTitle: 'Shift report', reportDescription: 'A summary of production, players, and shared work from the latest stored data.',
   activityEyebrow: 'TIMELINE', activityTitle: 'Activity', activityDescription: 'The latest 100 changes from the Factorio server and this application.',
   profilesEyebrow: 'OPERATORS', profilesTitle: 'Players', profilesDescription: 'All available personal statistics from telemetry and shared work in the application.',
   serverEyebrow: 'SAFE CONTROL', serverTitle: 'Server', serverDescription: 'Only allow-listed informational RCON queries and in-game messages. No raw console.',
@@ -183,7 +184,7 @@ function PwaUpdatePrompt({ locale }: { locale: Locale }) {
 
   useEffect(() => {
     if (!registration) return;
-    const checkForUpdate = () => { if (navigator.onLine) void registration.update(); };
+    const checkForUpdate = () => { if (navigator.onLine && document.visibilityState === 'visible') void registration.update(); };
     const checkWhenVisible = () => { if (document.visibilityState === 'visible') checkForUpdate(); };
     const timer = window.setInterval(checkForUpdate, 60 * 60 * 1000);
     window.addEventListener('online', checkForUpdate);
@@ -301,13 +302,15 @@ function ItemFlowList({ items, metric, limit = 6 }: { items: FactoryItem[]; metr
   </li>)}</ul>;
 }
 
-function DashboardView({ data, refresh, refreshing }: { data: Dashboard; refresh: () => void; refreshing: boolean }) {
+function DashboardView({ data, refresh, refreshing, refreshNotice }: { data: Dashboard; refresh: () => void; refreshing: boolean; refreshNotice: string }) {
   const { locale } = useContext(labelsContext);
   const server = data.snapshot.server;
   const productionRate = data.snapshot.sharedFactory.reduce((sum, item) => sum + Math.max(0, item.productionRate), 0);
   const consumptionRate = data.snapshot.sharedFactory.reduce((sum, item) => sum + Math.max(0, item.consumptionRate), 0);
   return <section className="content">
-    <PageHero view="Dashboard" density="spacious" eyebrow={textFor(locale, 'dashboardEyebrow')} title={textFor(locale, 'dashboardTitle')} description={server.online ? `${textFor(locale, 'dashboardOnline')} ${timeAgo(data.snapshot.generatedAt)}.` : textFor(locale, 'dashboardOffline')} actions={<button className="secondary with-icon" onClick={refresh} disabled={refreshing}><Glyph name="refresh" />{textFor(locale, refreshing ? 'refreshing' : 'refresh')}</button>} />
+    <PageHero view="Dashboard" density="spacious" eyebrow={textFor(locale, 'dashboardEyebrow')} title={textFor(locale, 'dashboardTitle')} description={data.telemetry.hasData ? `${textFor(locale, 'dashboardOnline')} ${timeAgo(data.telemetry.lastCompletedAt)}.` : 'Data zatím nebyla načtena.'} actions={<button className="secondary with-icon" onClick={refresh} disabled={refreshing || data.telemetry.running}><Glyph name="refresh" />{textFor(locale, refreshing || data.telemetry.running ? 'refreshing' : 'refresh')}</button>} />
+    {!data.telemetry.hasData && <div className="notice" role="status">Data zatím nebyla načtena. Tlačítko „Aktualizovat data“ provede jeden řízený sběr z Factorio serveru.</div>}
+    {refreshNotice && <div className="notice" role="status">{refreshNotice}</div>}
     <div className="status-grid">
       <article className="server-state"><span className={`lamp ${server.online ? 'online' : ''}`} /><div><small>Factorio server</small><strong>{server.online ? 'Online' : 'Offline'}</strong><span>{server.version ?? 'Verze neznámá'} · {server.gameState === 'running' ? 'hra běží' : server.gameState}</span></div></article>
       <Metric label="Aktuální výroba" value={`${compactNumber.format(productionRate)} / min`} note="všechny povrchy" tone="production" />
@@ -436,7 +439,7 @@ function MessagesView() {
   const [sending, setSending] = useState(false);
   const [editing, setEditing] = useState<string | null>(null); const [editBody, setEditBody] = useState(''); const [pendingDelete, setPendingDelete] = useState<string | null>(null); const [deleting, setDeleting] = useState(false);
   const load = () => api<SharedMessage[]>('/api/messages').then((value) => { setMessages(value); setError(''); const unread = value.filter((message) => !message.isOwn).map((message) => message.id); if (unread.length) void api('/api/messages/read', { method: 'POST', body: JSON.stringify({ messageIds: unread }) }); });
-  useEffect(() => { void load().catch((reason) => setError(reason.message)); const timer = window.setInterval(() => void load(), 30_000); return () => window.clearInterval(timer); }, [liveRevision]);
+  useEffect(() => { void load().catch((reason) => setError(reason.message)); }, [liveRevision]);
   async function send(event: React.FormEvent) {
     event.preventDefault(); setSending(true); setError('');
     try { await api('/api/messages', { method: 'POST', body: JSON.stringify({ body }) }); setBody(''); await load(); }
@@ -465,9 +468,9 @@ function GoalsView() {
   const liveRevision = useContext(liveContext);
   const [goals, setGoals] = useState<ProductionGoal[]>([]); const [production, setProduction] = useState<Production | null>(null); const [tasks, setTasks] = useState<Task[]>([]);
   const [item, setItem] = useState(''); const [amount, setAmount] = useState('10000'); const [taskId, setTaskId] = useState(''); const [search, setSearch] = useState('');
-  const [showPicker, setShowPicker] = useState(false); const [showCompleted, setShowCompleted] = useState(true); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [refreshing, setRefreshing] = useState(false); const [pendingDelete, setPendingDelete] = useState<ProductionGoal | null>(null); const [deleting, setDeleting] = useState(false);
+  const [showPicker, setShowPicker] = useState(false); const [showCompleted, setShowCompleted] = useState(true); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false); const [refreshing, setRefreshing] = useState(false); const [pendingDelete, setPendingDelete] = useState<ProductionGoal | null>(null); const [deleting, setDeleting] = useState(false);
   const load = () => Promise.all([api<ProductionGoal[]>('/api/goals'), api<Production>('/api/production?range=1h'), api<Task[]>('/api/tasks')]).then(([goalRows, productionData, taskRows]) => { setGoals(goalRows); setProduction(productionData); setTasks(taskRows.filter((task) => !task.isArchived)); setError(''); });
-  useEffect(() => { let active = true; const refresh = () => load().catch((reason) => active && setError(reason.message)); void refresh(); const timer = window.setInterval(() => void refresh(), 30_000); return () => { active = false; window.clearInterval(timer); }; }, [liveRevision]);
+  useEffect(() => { let active = true; void load().catch((reason) => active && setError(reason.message)); return () => { active = false; }; }, [liveRevision]);
   const choices = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase(locale);
     return (production?.catalog ?? []).filter((entry) => !needle || entry.item.includes(needle) || labelFor(labels, entry.item).toLocaleLowerCase(locale).includes(needle)).slice(0, 80);
@@ -478,7 +481,7 @@ function GoalsView() {
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Výrobní cíl se nepodařilo vytvořit.'); }
     finally { setBusy(false); }
   }
-  async function refreshNow() { setRefreshing(true); setError(''); try { await api('/api/server/telemetry-refresh', { method: 'POST' }); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Aktuální stav se nepodařilo načíst.'); } finally { setRefreshing(false); } }
+  async function refreshNow() { setRefreshing(true); setError(''); setNotice(''); try { const result = await api<{ disposition: string; lastCompletedAt: string | null }>('/api/server/telemetry-refresh', { method: 'POST' }); await load(); setNotice(result.disposition === 'cooldown' ? 'Data jsou stále v globálním cooldownu; nový RCON sběr nebyl spuštěn.' : `Stav cílů byl aktualizován${result.lastCompletedAt ? ` · ${new Date(result.lastCompletedAt).toLocaleString('cs-CZ')}` : ''}.`); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Aktuální stav se nepodařilo načíst. Poslední data zůstávají zobrazená.'); } finally { setRefreshing(false); } }
   async function remove(goal: ProductionGoal) { setDeleting(true); try { await api(`/api/goals/${goal.id}`, { method: 'DELETE' }); setPendingDelete(null); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Cíl se nepodařilo smazat.'); } finally { setDeleting(false); } }
   const visible = goals.filter((goal) => showCompleted || goal.status === 'active');
   const activeCount = goals.filter((goal) => goal.status === 'active').length;
@@ -486,6 +489,7 @@ function GoalsView() {
   return <section className="content goals-view">
     <PageHero view="Goals" eyebrow={textFor(locale, 'goalsEyebrow')} title={textFor(locale, 'goalsTitle')} description={textFor(locale, 'goalsDescription')} actions={<button type="button" className="secondary with-icon" onClick={() => void refreshNow()} disabled={refreshing}><Glyph name="refresh" />{refreshing ? textFor(locale, 'refreshing') : textFor(locale, 'refreshGoals')}</button>} />
     {error && <p className="error banner" role="alert">{error}</p>}
+    {notice && <div className="notice" role="status">{notice}</div>}
     <div className="goal-summary"><Metric label="Aktivní cíle" value={String(activeCount)} note="právě se sledují" tone="production" /><Metric label="Splněno" value={String(completedCount)} note="historicky" /><Metric label="Sledované tempo" value={`${compactNumber.format(goals.filter((goal) => goal.status === 'active').reduce((sum, goal) => sum + goal.productionRate, 0))} / min`} note="součet aktivních položek" /></div>
     <Panel title="Nový výrobní cíl" subtitle="Počítá se pouze nová výroba od okamžiku založení.">
       <form className="goal-form" onSubmit={create}>
@@ -529,7 +533,7 @@ function GoalCelebrationLayer() {
         window.setTimeout(() => active && setGoal(null), 9_000);
       } catch { /* Dashboard errors already report connectivity failures. */ }
     };
-    void check(); const timer = window.setInterval(() => void check(), 30_000); return () => { active = false; window.clearInterval(timer); };
+    void check(); return () => { active = false; };
   }, [liveRevision]);
   if (!goal) return null;
   return <div className="goal-celebration" role="status" aria-live="assertive"><div className="confetti" aria-hidden="true">{Array.from({ length: 18 }, (_, index) => <i style={{ '--i': index } as CSSProperties} key={index} />)}</div><button className="icon-button" onClick={() => setGoal(null)} aria-label="Zavřít oslavu"><Glyph name="close" /></button><span className="celebration-trophy">🏆</span><p>VÝROBNÍ CÍL SPLNĚN</p><h2>{wholeNumber.format(goal.targetAmount)}× {labelFor(labels, goal.item)}</h2><span>Zapsáno do Vzkazů · {goal.announcedInGame ? 'ohlášeno ve hře' : 'RCON oznámení čeká na doručení'}</span></div>;
@@ -539,7 +543,7 @@ function AchievementsView() {
   const liveRevision = useContext(liveContext);
   const { locale } = useContext(labelsContext);
   const [entries, setEntries] = useState<Achievement[]>([]); const [definitionCount, setDefinitionCount] = useState(0); const [scope, setScope] = useState('factory'); const [category, setCategory] = useState(''); const [hideLocked, setHideLocked] = useState(false); const [error, setError] = useState('');
-  useEffect(() => { let active = true; const load = () => api<{ definitions: number; achievements: Achievement[] }>('/api/achievements').then((value) => { if (active) { setEntries(value.achievements); setDefinitionCount(value.definitions); setError(''); } }).catch((reason) => active && setError(reason.message)); void load(); const timer = window.setInterval(() => void load(), 60_000); return () => { active = false; window.clearInterval(timer); }; }, [liveRevision]);
+  useEffect(() => { let active = true; void api<{ definitions: number; achievements: Achievement[] }>('/api/achievements').then((value) => { if (active) { setEntries(value.achievements); setDefinitionCount(value.definitions); setError(''); } }).catch((reason) => active && setError(reason.message)); return () => { active = false; }; }, [liveRevision]);
   const scopes = useMemo(() => [...new Map(entries.map((entry) => [entry.scopeKey, entry.scopeName])).entries()], [entries]);
   const categories = useMemo(() => [...new Set(entries.map((entry) => entry.category))], [entries]);
   const visible = entries.filter((entry) => entry.scopeKey === scope && (!category || entry.category === category) && (!hideLocked || entry.unlockedAt));
@@ -551,7 +555,7 @@ function ProfilesView() {
   const liveRevision = useContext(liveContext);
   const { locale } = useContext(labelsContext);
   const [profiles, setProfiles] = useState<Profile[]>([]); const [error, setError] = useState('');
-  useEffect(() => { let active = true; const load = () => api<Profile[]>('/api/profiles').then((value) => active && setProfiles(value)).catch((reason) => active && setError(reason.message)); void load(); const timer = window.setInterval(() => void load(), 60_000); return () => { active = false; window.clearInterval(timer); }; }, [liveRevision]);
+  useEffect(() => { let active = true; void api<Profile[]>('/api/profiles').then((value) => active && setProfiles(value)).catch((reason) => active && setError(reason.message)); return () => { active = false; }; }, [liveRevision]);
   return <section className="content"><PageHero view="Profiles" eyebrow={textFor(locale, "profilesEyebrow")} title={textFor(locale, "profilesTitle")} description={textFor(locale, "profilesDescription")} />{error && <p className="error banner">{error}</p>}<div className="profile-grid expanded">{profiles.map((profile) => <article className="profile-card expanded" key={profile.id}><header><span className="profile-avatar" style={{ '--avatar-color': profile.color } as CSSProperties}>{profile.displayName.slice(0, 1)}</span><div><h2>{profile.displayName}</h2><p>{profile.factorioName} · {profile.online ? 'právě ve hře' : `naposledy ${timeAgo(profile.lastOnlineAt)}`}</p></div><span className={`presence ${profile.online ? 'online' : ''}`}>{profile.online ? 'Online' : 'Offline'}</span></header><section className="profile-section"><h3>Osobní aktivita ve hře</h3><div className="profile-stats"><Metric label="Herní čas" value={duration(profile.playtimeSeconds)} /><Metric label="Ručně vyrobeno" value={wholeNumber.format(profile.personalActivity.handCrafted)} note={`${preciseNumber.format(profile.rates.craftedPerHour)} / h`} /><Metric label="Ručně vytěženo" value={wholeNumber.format(profile.personalActivity.mined)} note={`${preciseNumber.format(profile.rates.minedPerHour)} / h`} /><Metric label="Postaveno" value={wholeNumber.format(profile.personalActivity.built)} note={`${preciseNumber.format(profile.rates.builtPerHour)} / h`} /><Metric label="Úmrtí" value={wholeNumber.format(profile.personalActivity.deaths)} /></div></section><section className="profile-section"><h3>Společná práce</h3><div className="collaboration-stats"><span><strong>{profile.completedTasks}</strong> hotových úkolů</span><span><strong>{profile.collaboration.openTasks}</strong> otevřených úkolů</span><span><strong>{profile.collaboration.createdTasks}</strong> založených úkolů</span><span><strong>{profile.collaboration.messages}</strong> vzkazů</span><span><strong>{profile.collaboration.comments}</strong> komentářů</span><span><strong>{profile.collaboration.reactions}</strong> reakcí</span><span><strong>{profile.collaboration.completedGoals}</strong> splněných cílů</span><span><strong>{profile.collaboration.achievements}</strong> úspěchů</span></div></section></article>)}</div><p className="footnote">Strojovou výrobu nelze poctivě rozdělit mezi hráče, protože oba pracují ve společné force. Zobrazené osobní údaje pocházejí pouze z jednoznačně přiřaditelných herních událostí.</p></section>;
 }
 
@@ -696,13 +700,13 @@ function useOperationsData() {
   const liveRevision = useContext(liveContext);
   const [operations, setOperations] = useState<OperationsResponse | null>(null); const [error, setError] = useState('');
   const load = async () => { try { setOperations(await api<OperationsResponse>('/api/operations')); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Telemetry není dostupná.'); } };
-  useEffect(() => { let active = true; const refresh = () => api<OperationsResponse>('/api/operations').then((value) => { if (active) { setOperations(value); setError(''); } }).catch((reason) => active && setError(reason.message)); void refresh(); const timer = window.setInterval(() => void refresh(), 60_000); return () => { active = false; window.clearInterval(timer); }; }, [liveRevision]);
+  useEffect(() => { let active = true; void api<OperationsResponse>('/api/operations').then((value) => { if (active) { setOperations(value); setError(''); } }).catch((reason) => active && setError(reason.message)); return () => { active = false; }; }, [liveRevision]);
   return { operations, error, load };
 }
 
 function OperationsShell({ view, title, description, capability, state, children }: { view: HeroView; title: string; description: string; capability?: OperationsResponse['capabilities'][number]; state: ReturnType<typeof useOperationsData>; children: (operations: OperationsResponse) => ReactNode }) {
   const { operations, error } = state;
-  return <section className="content operations-view"><PageHero view={view} density="compact" eyebrow="SPACE AGE TELEMETRY" title={title} description={description} actions={operations && <span className="telemetry-version">LIVE · {timeAgo(operations.generatedAt)}</span>} />{error && <p className="error banner">{error}</p>}{!operations ? <div className="page-loading"><p>Načítám telemetry…</p></div> : capability && !operations.capabilities.includes(capability) ? <div className="telemetry-upgrade"><strong>Telemetry tuto část zatím neposílá.</strong><p>Po nasazení aktuálního modu se stránka sama naplní. Ostatní části aplikace zůstávají funkční.</p></div> : children(operations)}</section>;
+  return <section className="content operations-view"><PageHero view={view} density="compact" eyebrow="SPACE AGE TELEMETRY" title={title} description={description} actions={operations && <span className="telemetry-version">CACHE · {timeAgo(operations.generatedAt)}</span>} />{error && <p className="error banner">{error}</p>}{!operations ? <div className="page-loading"><p>Načítám uloženou telemetry…</p></div> : capability && !operations.capabilities.includes(capability) ? <div className="telemetry-upgrade"><strong>Telemetry tuto část zatím neposílá.</strong><p>Po ruční aktualizaci aktuálním modem se stránka naplní. Ostatní části aplikace zůstávají funkční.</p></div> : children(operations)}</section>;
 }
 
 function PlanetsView() {
@@ -808,8 +812,8 @@ function ProductionView() {
   useEffect(() => {
     let active = true;
     const load = () => { setLoading(true); return api<Production>(`/api/production?range=${range}&kind=${kind}${selectedItems.length ? `&items=${encodeURIComponent(selectedItems.join(','))}` : ''}`).then((value) => { if (active) { setProduction(value); setError(''); } }).catch((reason) => active && setError(reason.message)).finally(() => active && setLoading(false)); };
-    void load(); const timer = window.setInterval(() => void load(), 60_000);
-    return () => { active = false; window.clearInterval(timer); };
+    void load();
+    return () => { active = false; };
   }, [range, kind, selectedItems.join(','), liveRevision]);
   function toggleItem(item: string) { if (!selectedItems.includes(item)) setComparisonMetric('both'); setSelectedItems((current) => current.includes(item) ? current.filter((value) => value !== item) : current.length < 4 ? [...current, item] : [...current.slice(1), item]); }
   useEffect(() => { if (!selectedItems.length) setComparisonMetric('both'); }, [selectedItems.length]);
@@ -857,7 +861,7 @@ function ReportView() {
   const [flowFilter, setFlowFilter] = useState<'both' | 'production' | 'consumption'>('both');
   const [minimumAmount, setMinimumAmount] = useState(0);
   const liveRevision = useContext(liveContext);
-  useEffect(() => { let active = true; const load = () => api<ShiftReport>(`/api/reports/shift?hours=${hours}`).then((value) => { if (active) { setReport(value); setError(''); } }).catch((reason) => active && setError(reason.message)); setReport(null); void load(); const timer = window.setInterval(() => void load(), 60_000); return () => { active = false; window.clearInterval(timer); }; }, [hours, liveRevision]);
+  useEffect(() => { let active = true; setReport(null); void api<ShiftReport>(`/api/reports/shift?hours=${hours}`).then((value) => { if (active) { setReport(value); setError(''); } }).catch((reason) => active && setError(reason.message)); return () => { active = false; }; }, [hours, liveRevision]);
   const normalizedSearch = itemSearch.trim().toLocaleLowerCase(locale);
   const filterItems = (items: ProductionItem[]) => items.filter((item) => {
     if (item.amount < minimumAmount) return false;
@@ -874,7 +878,7 @@ function ReportView() {
   }
   async function copy() { await navigator.clipboard.writeText(reportText()); setCopied(true); window.setTimeout(() => setCopied(false), 1800); }
   const intervalLabel = report?.production.basis === 'interval' ? `Kumulativně za ${hours} hodin · sestupně podle množství` : 'Aktuální rychlost · sestupně podle množství';
-  return <section className="content"><PageHero view="Report" eyebrow={textFor(locale, "reportEyebrow")} title={textFor(locale, "reportTitle")} description={textFor(locale, "reportDescription")} actions={<div className="range-picker">{[4, 8, 12, 24].map((value) => <button className={hours === value ? 'active' : ''} onClick={() => setHours(value)} key={value}>{value} h</button>)}</div>} />{error && <p className="error banner">{error}</p>}{!report ? <div className="page-loading"><p>Sestavuji report…</p></div> : <><div className="report-hero"><div><span className={`lamp ${report.server.online ? 'online' : ''}`} /><div><small>Stav na konci směny</small><strong>{report.server.online ? 'Továrna běží' : 'Továrna neodpovídá'}</strong><span>{report.players.filter((player) => player.online).length} hráčů online · {report.production.sampleCount} vzorků</span></div></div><button className="secondary with-icon" onClick={() => void copy()}><Glyph name="copy" />{copied ? 'Zkopírováno' : 'Kopírovat report'}</button></div><div className="report-metrics"><Metric label="Nové úkoly" value={String(report.collaboration.createdTasks)} note={`za posledních ${hours} hodin`} /><Metric label="Dokončeno" value={String(report.collaboration.completedTasks)} note="hotové úkoly" tone="production" /><Metric label="Vzkazy" value={String(report.collaboration.messages)} note="předání mezi hráči" /></div><div className="report-filter-toolbar"><label className="report-search"><span>Hledat položku</span><input type="search" value={itemSearch} onChange={(event) => setItemSearch(event.target.value)} placeholder="Název nebo prototype…" /></label><label><span>Zobrazit tok</span><select value={flowFilter} onChange={(event) => setFlowFilter(event.target.value as typeof flowFilter)}><option value="both">Výroba i spotřeba</option><option value="production">Pouze výroba</option><option value="consumption">Pouze spotřeba</option></select></label><label><span>Minimální množství</span><select value={minimumAmount} onChange={(event) => setMinimumAmount(Number(event.target.value))}><option value={0}>Bez omezení</option><option value={10}>Alespoň 10</option><option value={100}>Alespoň 100</option><option value={1_000}>Alespoň 1 000</option><option value={10_000}>Alespoň 10 000</option></select></label><div className="report-result-count"><strong>{producedItems.length + consumedItems.length}</strong><span>zobrazených řádků</span></div></div><div className={`two-columns report-production-lists ${flowFilter === 'both' ? '' : 'is-single'}`}>{flowFilter !== 'consumption' && <Panel title={`Výroba · ${producedItems.length}/${report.production.topProduced.length} položek`} subtitle={intervalLabel}><ReportItems items={producedItems} labels={labels} emptyMessage="Filtru neodpovídá žádná vyráběná položka." /></Panel>}{flowFilter !== 'production' && <Panel title={`Spotřeba · ${consumedItems.length}/${report.production.topConsumed.length} položek`} subtitle={intervalLabel}><ReportItems items={consumedItems} labels={labels} emptyMessage="Filtru neodpovídá žádná spotřebovávaná položka." /></Panel>}</div><Panel title="Důležité události" subtitle="Poslední změny v tomto okně">{report.events.length ? <ul className="activity-list compact">{report.events.map((event, index) => <li key={`${event.occurred_at}-${index}`}><time>{timeAgo(event.occurred_at)}</time><div><strong>{event.payload.message ?? event.payload.title ?? event.event_type}</strong><small>{event.actor_name ?? 'Factorio'}</small></div></li>)}</ul> : <EmptyState>Směna proběhla bez zaznamenaných událostí.</EmptyState>}</Panel><p className="footnote">Report obsahuje všechny položky za zvolené období, v pořadí podle množství. Byl automaticky sestaven {timeAgo(report.generatedAt)} a při otevřené stránce se průběžně obnovuje.</p></>}</section>;
+  return <section className="content"><PageHero view="Report" eyebrow={textFor(locale, "reportEyebrow")} title={textFor(locale, "reportTitle")} description={textFor(locale, "reportDescription")} actions={<div className="range-picker">{[4, 8, 12, 24].map((value) => <button className={hours === value ? 'active' : ''} onClick={() => setHours(value)} key={value}>{value} h</button>)}</div>} />{error && <p className="error banner">{error}</p>}{!report ? <div className="page-loading"><p>Sestavuji report…</p></div> : <><div className="report-hero"><div><span className={`lamp ${report.server.online ? 'online' : ''}`} /><div><small>Stav na konci směny</small><strong>{report.server.online ? 'Továrna běží' : 'Továrna neodpovídá'}</strong><span>{report.players.filter((player) => player.online).length} hráčů online · {report.production.sampleCount} vzorků</span></div></div><button className="secondary with-icon" onClick={() => void copy()}><Glyph name="copy" />{copied ? 'Zkopírováno' : 'Kopírovat report'}</button></div><div className="report-metrics"><Metric label="Nové úkoly" value={String(report.collaboration.createdTasks)} note={`za posledních ${hours} hodin`} /><Metric label="Dokončeno" value={String(report.collaboration.completedTasks)} note="hotové úkoly" tone="production" /><Metric label="Vzkazy" value={String(report.collaboration.messages)} note="předání mezi hráči" /></div><div className="report-filter-toolbar"><label className="report-search"><span>Hledat položku</span><input type="search" value={itemSearch} onChange={(event) => setItemSearch(event.target.value)} placeholder="Název nebo prototype…" /></label><label><span>Zobrazit tok</span><select value={flowFilter} onChange={(event) => setFlowFilter(event.target.value as typeof flowFilter)}><option value="both">Výroba i spotřeba</option><option value="production">Pouze výroba</option><option value="consumption">Pouze spotřeba</option></select></label><label><span>Minimální množství</span><select value={minimumAmount} onChange={(event) => setMinimumAmount(Number(event.target.value))}><option value={0}>Bez omezení</option><option value={10}>Alespoň 10</option><option value={100}>Alespoň 100</option><option value={1_000}>Alespoň 1 000</option><option value={10_000}>Alespoň 10 000</option></select></label><div className="report-result-count"><strong>{producedItems.length + consumedItems.length}</strong><span>zobrazených řádků</span></div></div><div className={`two-columns report-production-lists ${flowFilter === 'both' ? '' : 'is-single'}`}>{flowFilter !== 'consumption' && <Panel title={`Výroba · ${producedItems.length}/${report.production.topProduced.length} položek`} subtitle={intervalLabel}><ReportItems items={producedItems} labels={labels} emptyMessage="Filtru neodpovídá žádná vyráběná položka." /></Panel>}{flowFilter !== 'production' && <Panel title={`Spotřeba · ${consumedItems.length}/${report.production.topConsumed.length} položek`} subtitle={intervalLabel}><ReportItems items={consumedItems} labels={labels} emptyMessage="Filtru neodpovídá žádná spotřebovávaná položka." /></Panel>}</div><Panel title="Důležité události" subtitle="Poslední změny v tomto okně">{report.events.length ? <ul className="activity-list compact">{report.events.map((event, index) => <li key={`${event.occurred_at}-${index}`}><time>{timeAgo(event.occurred_at)}</time><div><strong>{event.payload.message ?? event.payload.title ?? event.event_type}</strong><small>{event.actor_name ?? 'Factorio'}</small></div></li>)}</ul> : <EmptyState>Směna proběhla bez zaznamenaných událostí.</EmptyState>}</Panel><p className="footnote">Report obsahuje všechny položky za zvolené období, v pořadí podle množství. Byl sestaven {timeAgo(report.generatedAt)} z uložených snapshotů.</p></>}</section>;
 }
 
 function ReportItems({ items, labels, emptyMessage = 'Pro toto období nejsou data.' }: { items: ProductionItem[]; labels: Record<string, string>; emptyMessage?: string }) {
@@ -916,22 +920,44 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshNotice, setRefreshNotice] = useState('');
   const [liveRevision, setLiveRevision] = useState(0);
   const setLocale = (value: Locale) => { setLocaleState(value); window.localStorage.setItem('hal-locale', value); };
   useEffect(() => { api<{ user: User; csrfToken: string }>('/api/auth/session').then((session) => { csrfToken = session.csrfToken; setUser(session.user); }).catch(() => undefined).finally(() => setSessionChecked(true)); }, []);
-  const load = async (showBusy = false) => { if (showBusy) setRefreshing(true); try { setData(await api<Dashboard>('/api/dashboard')); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Data nejsou dostupná.'); } finally { setRefreshing(false); } };
+  const load = async (signal?: AbortSignal) => { try { setData(await api<Dashboard>('/api/dashboard', { signal })); setError(''); } catch (reason) { if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : 'Data nejsou dostupná.'); } };
+  const refreshTelemetry = async () => {
+    if (refreshing) return;
+    setRefreshing(true); setError(''); setRefreshNotice('');
+    try {
+      const result = await api<{ disposition: 'started' | 'deduplicated' | 'cooldown'; lastCompletedAt: string | null }>('/api/server/telemetry-refresh', { method: 'POST' });
+      await load();
+      setRefreshNotice(result.disposition === 'cooldown'
+        ? 'Poslední data jsou stále v globálním cooldownu; další RCON sběr nebyl spuštěn.'
+        : result.disposition === 'deduplicated'
+          ? `Sdílená aktualizace byla dokončena${result.lastCompletedAt ? ` · ${new Date(result.lastCompletedAt).toLocaleString('cs-CZ')}` : ''}.`
+          : `Data byla úspěšně aktualizována${result.lastCompletedAt ? ` · ${new Date(result.lastCompletedAt).toLocaleString('cs-CZ')}` : ''}.`);
+    }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Aktuální stav se nepodařilo načíst. Poslední uložená data zůstávají dostupná.'); }
+    finally { setRefreshing(false); }
+  };
   useEffect(() => {
     if (!user) return;
-    void load();
-    const timer = window.setInterval(() => void load(), 30_000);
-    return () => window.clearInterval(timer);
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
   }, [user]);
   useEffect(() => {
     if (!user) return;
     const stream = new EventSource('/api/events/stream');
-    const update = () => { setLiveRevision((current) => current + 1); void load(); };
+    const update = () => {
+      if (document.visibilityState !== 'visible') return;
+      setLiveRevision((current) => current + 1);
+      void load();
+    };
+    const syncWhenVisible = () => { if (document.visibilityState === 'visible') update(); };
     stream.addEventListener('update', update);
-    return () => { stream.removeEventListener('update', update); stream.close(); };
+    document.addEventListener('visibilitychange', syncWhenVisible);
+    return () => { stream.removeEventListener('update', update); document.removeEventListener('visibilitychange', syncWhenVisible); stream.close(); };
   }, [user]);
   useEffect(() => { if (user) void api<{ labels: Record<string, string> }>(`/api/prototypes?locale=${locale}`).then((result) => setLabels(result.labels)).catch(() => setLabels({})); }, [user, locale]);
   useEffect(() => { setMenuOpen(false); }, [active]);
@@ -944,7 +970,7 @@ export function App() {
   }, [menuOpen]);
   const content = useMemo(() => {
     if (!data) return <div className="page-loading"><span className="brand-mark">H</span><p>Navazuji spojení s továrnou…</p></div>;
-    if (active === 'Dashboard') return <DashboardView data={data} refresh={() => void load(true)} refreshing={refreshing} />;
+    if (active === 'Dashboard') return <DashboardView data={data} refresh={() => void refreshTelemetry()} refreshing={refreshing} refreshNotice={refreshNotice} />;
     if (active === 'Tasks') return <TasksView onChanged={() => void load()} />;
     if (active === 'Messages') return <MessagesView />;
     if (active === 'Production') return <ProductionView />;
@@ -960,7 +986,7 @@ export function App() {
     if (active === 'Activity') return <ActivityView />;
     if (active === 'Profiles') return <ProfilesView />;
     return <ServerView />;
-  }, [active, data, refreshing]);
+  }, [active, data, refreshing, refreshNotice]);
   if (!sessionChecked) return <><PwaUpdatePrompt locale={locale} /><div className="page-loading full"><span className="brand-mark">H</span></div></>;
   if (!user) return <><PwaUpdatePrompt locale={locale} /><Login onLogin={setUser} /></>;
   async function logout() { try { await api('/api/auth/logout', { method: 'POST' }); } finally { csrfToken = ''; setUser(null); setData(null); } }

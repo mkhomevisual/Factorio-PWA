@@ -22,4 +22,5 @@ export interface FactoryAdapter {
   save(): Promise<void>;
   sendMessage(message: string): Promise<void>;
   query(command: SafeRconQuery): Promise<string>;
+  close?(): void;
 }

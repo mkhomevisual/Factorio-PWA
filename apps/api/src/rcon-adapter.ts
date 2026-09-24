@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { executeFactorioRconCommand } from './factorio-rcon-client.js';
+import { FactorioRconClient } from './factorio-rcon-client.js';
 import type {
   FactoryAdapter,
   FactorySnapshot,
@@ -225,16 +225,16 @@ export function parseTelemetryResponse(response: string, observedAt = new Date()
 }
 
 export class FactorioRconAdapter implements FactoryAdapter {
+  private password: Promise<string> | null = null;
+  private client: Promise<FactorioRconClient> | null = null;
   constructor(private readonly options: Config) {}
 
   private async command(command: string): Promise<string> {
-    const password = (await readFile(this.options.RCON_PASSWORD_FILE, 'utf8')).trim();
-    return executeFactorioRconCommand({
-      host: this.options.FACTORIO_RCON_HOST,
-      port: this.options.FACTORIO_RCON_PORT,
-      password,
-      timeoutMs: 8_000
-    }, command);
+    this.password ??= readFile(this.options.RCON_PASSWORD_FILE, 'utf8').then((value) => value.trim());
+    this.client ??= this.password.then((password) => new FactorioRconClient({
+      host: this.options.FACTORIO_RCON_HOST, port: this.options.FACTORIO_RCON_PORT, password, timeoutMs: 8_000
+    }));
+    return (await this.client).execute(command);
   }
 
   async getSnapshot(afterEventId = '0'): Promise<FactorySnapshot> {
@@ -259,6 +259,8 @@ export class FactorioRconAdapter implements FactoryAdapter {
     };
     return this.command(commands[query]);
   }
+
+  close() { void this.client?.then((client) => client.close()); }
 }
 
 function eventMessage(event: RawEvent) {

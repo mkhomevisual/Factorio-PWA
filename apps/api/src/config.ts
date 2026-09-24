@@ -11,6 +11,10 @@ const environment = z.object({
   FACTORIO_RCON_PORT: z.coerce.number().int().positive().default(27015),
   FACTORIO_LOG_PATH: z.string().default('/factorio/factorio-current.log'),
   RCON_PASSWORD_FILE: z.string().default('/run/secrets/factorio_rcon_password'),
+  HAL_BACKGROUND_SAMPLING_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  HAL_BACKGROUND_SAMPLING_INTERVAL_MS: z.coerce.number().int().min(300_000).default(300_000),
+  HAL_LIVE_RCON_ON_PAGE_LOAD: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  HAL_REFRESH_COOLDOWN_MS: z.coerce.number().int().min(10_000).default(10_000),
   // z.coerce.boolean() treats the non-empty string "false" as true, which is
   // unsafe for a local HTTP mock deployment. Accept only explicit text values.
   SESSION_COOKIE_SECURE: z.enum(['true', 'false']).default('false').transform((value) => value === 'true')

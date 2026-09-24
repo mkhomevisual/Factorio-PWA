@@ -50,29 +50,44 @@ Importér čte pouze `graphics/icons`, `locale/cs` a `locale/en`, nikoli velké 
 
 ## Read-only Factorio log
 
-Produkční override připojuje `factorio-current.log` pouze pro čtení. Backend sleduje offset a inode, tedy log ani při rotaci nepřepisuje. Z rozpoznaných řádků vytváří activity události pro připojení/odpojení, save a běžně logovaný research či rocket launch. Autoritativní telemetry pro přesné události zajišťuje mod.
+Produkční override připojuje `factorio-current.log` pouze pro čtení. Backend sleduje offset a inode a při explicitním telemetry refreshi čte nejvýše 256 KiB nových dat; při prvním čtení vezme pouze omezený tail. Nespouští vlastní desetisekundový polling a nikdy nenačítá celý log. Z rozpoznaných řádků vytváří activity události pro připojení/odpojení, save a běžně logovaný research či rocket launch. Autoritativní telemetry pro přesné události zajišťuje mod.
 
 ## Production telemetry V3
 
-Mod `hal-telemetry` 0.5.2 používá kontrakt V3. Z Factorio 2 čte správnou dvojici flow statistik položek a kapalin (`input` = výroba, `output` = spotřeba), kumulativní počitadla a přímo herní klouzavé rychlosti za jednu minutu. Elektrická statistika má podle Factorio API opačnou orientaci (`input` = odběr, `output` = výroba). Data zachovávají rozměry force a surface, samostatně sledují položky, kapaliny a řídký rozpad nenormálních quality. Snapshot dále obsahuje research queue a progress, vesmírné platformy, znečištění, elektrické a logistické sítě včetně rozpadu výrobců a odběrů, pojmenované sondy a přesné herní ticky událostí.
+Mod `hal-telemetry` 0.6.0 používá kontrakt V3. Z Factorio 2 čte správnou dvojici flow statistik položek a kapalin (`input` = výroba, `output` = spotřeba), kumulativní počitadla a přímo herní klouzavé rychlosti za jednu minutu. Elektrická statistika má podle Factorio API opačnou orientaci (`input` = odběr, `output` = výroba). Data zachovávají rozměry force a surface, samostatně sledují položky, kapaliny a řídký rozpad nenormálních quality. Snapshot dále obsahuje research queue a progress, vesmírné platformy, znečištění, agregované elektrické a logistické sítě, pojmenované sondy a přesné herní ticky událostí. Verze 0.6.0 z běžného snapshotu odstranila plošné skenování elektrických sloupů a akumulátorů; přesný součet energie akumulátorů proto bezpečný snapshot neuvádí.
 
 Backend během přechodu přijímá kontrakty V2 i V3. V2 dál poskytuje původní společnou výrobu; nové obrazovky Operations a kapaliny se aktivují po prvním V3 snapshotu. Event cursor obsahuje stabilní ID save, takže nový nebo vyměněný save nezačne omylem navazovat na číselnou řadu předchozí mapy.
 
-Minutové gzip snapshoty a povrchové energetické vzorky se drží 48 hodin. Současně se inkrementálně vytvářejí hodinové a denní rollupy položek i kapalin. Výrobu lze proto zobrazit za 7 dní, 30 dní a jeden rok bez trvalého ukládání milionů detailních snapshotů. Reset kumulativních Factorio čítačů se do rollupů nikdy nezapočítá jako výroba.
+Gzip snapshoty vytvořené úspěšným ručním nebo volitelným background refreshem se drží 48 hodin. Současně se inkrementálně vytvářejí hodinové a denní rollupy položek i kapalin. Výrobu lze proto zobrazit za 7 dní, 30 dní a jeden rok bez trvalého ukládání milionů detailních snapshotů. Reset kumulativních Factorio čítačů se do rollupů nikdy nezapočítá jako výroba.
+
+## Bezpečný refresh a volitelný sampling
+
+Výchozí režim neposílá po startu backendu ani po otevření PWA žádný RCON příkaz. GET endpointy vracejí poslední SQLite snapshot; nový sběr spouští pouze tlačítko **Aktualizovat data** přes `POST /api/server/telemetry-refresh`. Současné požadavky všech uživatelů sdílejí jeden job, platí globální cooldown nejméně 10 sekund a všechny telemetry, save, message i informační příkazy procházejí jednou frontou s concurrency 1. RCON klient drží jedno spojení a po chybě ho bezpečně obnoví při následujícím příkazu. Stav a čítače jsou po přihlášení na `GET /api/server/diagnostics`.
+
+Volitelný globální sampler je ve výchozím stavu vypnutý:
+
+```env
+HAL_BACKGROUND_SAMPLING_ENABLED=false
+HAL_BACKGROUND_SAMPLING_INTERVAL_MS=300000
+HAL_LIVE_RCON_ON_PAGE_LOAD=false
+HAL_REFRESH_COOLDOWN_MS=10000
+```
+
+Interval background režimu nemůže být kratší než pět minut, další běh čeká na dokončení předchozího a po chybách používá exponential backoff. `HAL_LIVE_RCON_ON_PAGE_LOAD=true` je kompatibilní opt-in pro jeden globální refresh při startu backendu; počet karet jej nenásobí.
 
 Každý Docker build zároveň vytvoří validní Factorio archiv `hal-telemetry_<verze>.zip` přímo z adresáře modu. Přihlášený uživatel si přesně tuto verzi stáhne v sekci **Server**, takže soubor není nutné ručně kopírovat přes SSH.
 
 ## Operations, výrobní cíle, úspěchy a bezpečné RCON nástroje
 
-Sekce **Operations** sdružuje planetární přehled, výzkum, vesmírné platformy, energetiku, logistické zásoby a sondy. U každého povrchu ukazuje aktivní hráče, item a fluid throughput, znečištění, evoluci a elektrickou bilanci. Research panel dopočítává tempo science a ETA z reálně spotřebovávaných science packů. Platformy zobrazují aktuální trasu, stav, rychlost, hmotnost, poškozené dlaždice a obsah hubu. Energetika agreguje oddělené elektrické sítě každé force a stav akumulátorů; nevytváří falešný součet mezi různými povrchy. Logistika ukazuje obsah sítí, dostupnost obou typů robotů, nabíjení a uživatelská minima zásob. Pojmenovaná sonda umí sledovat vybranou truhlu, tank, roboport, elektrický sloup nebo combinator.
+Sekce **Operations** sdružuje planetární přehled, výzkum, vesmírné platformy, energetiku, logistické zásoby a sondy. U každého povrchu ukazuje aktivní hráče, item a fluid throughput, znečištění, evoluci a bezpečně dostupnou elektrickou bilanci. Research panel dopočítává tempo science a ETA z reálně spotřebovávaných science packů. Platformy zobrazují aktuální trasu, stav, rychlost, hmotnost, poškozené dlaždice a obsah hubu. Energetika používá agregované statistiky bez plošného skenování entit; přesný stav všech akumulátorů se v bezpečném režimu nezjišťuje. Logistika ukazuje obsah sítí, dostupnost obou typů robotů, nabíjení a uživatelská minima zásob. Pojmenovaná sonda umí sledovat vybranou truhlu, tank, roboport, elektrický sloup nebo combinator.
 
 Sondy se spravují přímo ve hře nad vybranou entitou příkazy `/hal-probe Název` a `/hal-unprobe Název`. Úkol lze ze hry založit příkazem `/hal-task Popis úkolu`; mod k němu připojí aktuální povrch a GPS hráče. Aplikace vrátí krátký kód, kterým se úkol dokončí přes `/hal-done ABC123`. Příkazy se zpracovávají jako deduplikované telemetry události, takže opakované načtení snapshotu nevytvoří duplicitní úkol.
 
 Blueprint string uložený u úkolu lze bezpečně dekódovat přímo v detailu: inspector ukáže štítek, verzi, rozměr, počty entit a dlaždic, ikony, agregovaný soupis umístěných prototypů a schematický náhled. Blueprint sám neobsahuje receptové suroviny ani spolehlivý úplný seznam modů, proto je aplikace nevydává za přesný material cost.
 
-Přihlášené PWA drží jedno autentizované SSE spojení na `/api/events/stream`. Změny úkolů, vzkazů, cílů, telemetry a dalších sdílených dat se tak propíšou do otevřených klientů bez čekání na pravidelný polling; časované obnovování zůstává jako záloha při výpadku spojení.
+Přihlášené PWA drží jedno autentizované SSE spojení na `/api/events/stream`. Změny úkolů, vzkazů, cílů a cached telemetry se tak propíšou do otevřených klientů bez pravidelného aplikačního pollingu. Skrytá karta ani několik otevřených karet nespouští živý RCON sběr.
 
-Výrobní cíl ukládá počáteční kumulativní čítač položky a dále přičítá pouze kladné rozdíly mezi minutovými telemetry vzorky. Reset herního čítače proto cíl nesplní omylem; při načtení jiného save se baseline bezpečně založí znovu. Po dokončení aplikace připne automatický vzkaz, zobrazí oslavu v PWA a přes stávající interní RCON spojení pošle oznámení do hry. Neúspěšné herní oznámení se opakuje při dalším vzorku; průběh cíle zůstává bezpečně uložený v SQLite.
+Výrobní cíl ukládá počáteční kumulativní čítač položky a dále přičítá pouze kladné rozdíly mezi telemetry snapshoty. Reset herního čítače proto cíl nesplní omylem; při načtení jiného save se baseline bezpečně založí znovu. Po dokončení aplikace připne automatický vzkaz, zobrazí oslavu v PWA a přes stávající interní RCON spojení pošle oznámení do hry. Neúspěšné herní oznámení se opakuje při dalším vzorku; průběh cíle zůstává bezpečně uložený v SQLite.
 
 Sekce **Úspěchy** obsahuje 150 perzistentních výzev pro oba hráče a společnou továrnu. Většinu tvoří skutečné herní milníky z Factorio telemetry: konkrétní výrobky a kapaliny, science packy, Space Age materiály, planety, platformy, logistika a energie; webová spolupráce je jen doplňková sada. Serverová obrazovka nabízí šest pevně whitelisted informačních RCON dotazů (`players`, `time`, `version`, `evolution`, `admins`, `whitelist`); klient nikdy neposílá vlastní raw příkaz.
 
